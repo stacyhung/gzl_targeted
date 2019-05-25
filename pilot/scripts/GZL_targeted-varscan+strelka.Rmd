@@ -1,0 +1,424 @@
+---	
+title: "Intersect VarScan and Strelka"	
+author: "Stacy Hung"	
+date: "May 24, 2019"	
+output: html_document	
+---	
+	
+This script performs the following tasks:	
+1. Filters varScan predictions (output produced from running varScan.mk with appropriate parameters)	
+2. Intersects varScan and Strelka predictions (indels from VarScan only)	
+ 	
+For details on filters used in Varscan, please consult http://varscan.sourceforge.net/somatic-calling.html	
+	
+For effect and codon annotation, SnpEff-4.0 is used, while for HGVS annotation (cds and protein), SnpEff-4.2 is used.	
+	
+How to run this script:	
+ 	
+Rscript GPH-varscan+strelka_to_masterlist.R <1> <2> <3> <4> <5> <6>
+ 	
+where 	
+	
+<1> is the absolute file path of the varscan snp table annotated with SnpEff-4.0	
+<2> is the absolute file path of the varscan indel table annotated with SnpEff-4.0	
+<3> is the absolute file path of the varscan snp table annotated with SnpEff-4.2	
+<4> is the absolute file path of the varscan indel table annotated with SnpEff-4.2	
+<5> is the absolute file path of the strelka passed.snvs
+<6> is the absolute file path of the output results directory
+	
+ 	
+## Load libraries
+ 	
+```{r}
+install.packages("plyr", repos='http://cran.rstudio.com/')
+install.packages("dplyr", repos='http://cran.rstudio.com/')
+install.packages("tidyr", repos='http://cran.rstudio.com/')
+install.packages("DataCombine", repos='http://cran.rstudio.com/')
+
+library(dplyr)    # filter	
+library(tidyr)    # separate	
+library(DataCombine) # find and replace	
+```
+
+## Load and filter varScan dataset	
+
+```{r}
+#args <- commandArgs(trailingOnly = TRUE)	
+	
+# use SnpEff-4.0 for effect annotation	
+#varscan_snvs.snpEff_4.0 <- args[1]	
+#varscan_indels.snpEff_4.0 <- args[2]	
+setwd("/Volumes/shung/projects/gzl_targeted/pilot/")
+varscan_snvs.snpEff_4.0 <- "varScan-snpEff-4.0/all.paired_samples.varScan.snps.snpEff.snps_annotated.cosmic_annotated.txt"
+varscan_indels.snpEff_4.0 <- "varScan-snpEff-4.0/all.paired_samples.varScan.indels.snpEff_canonical.indels_annotated.txt"
+
+# read in the files	
+varscan.snvs <- read.table(varscan_snvs.snpEff_4.0, sep = "\t", header = TRUE, fill = TRUE)	
+varscan.indels <- read.table(varscan_indels.snpEff_4.0, sep = "\t", header = TRUE, fill = TRUE)	
+# combine snvs + indels for SnpEFf-4.0 effect annotations	
+varscan.snvs$type = "snv"	
+varscan.indels$type = "indel"	
+varscan.calls <- rbind(varscan.snvs, varscan.indels)	
+	
+# use SnpEff-4.2 for HGVS annotation	
+#varscan_snvs.snpEff_4.2 <- args[3]	
+#varscan_indels.snpEff_4.2 <- args[4]	
+varscan_snvs.snpEff_4.2 <- "varScan-snpEff-4.2/all.paired_samples.varScan.snps.snpEff.snps_annotated.cosmic_annotated.txt"
+varscan_indels.snpEff_4.2 <- "varScan-snpEff-4.2/all.paired_samples.varScan.indels.snpEff_canonical.indels_annotated.txt"
+
+# read in the files	
+varscan.snvs.hgvs <- read.table(varscan_snvs.snpEff_4.2, sep = "\t", header = TRUE, fill = TRUE)	
+varscan.indels.hgvs <- read.table(varscan_indels.snpEff_4.2, sep = "\t", header = TRUE, fill = TRUE)	
+# combine snvs + indels for SnpEff-4.2 HGVS annotations	
+varscan.snvs.hgvs$type = "snv"	
+varscan.indels.hgvs$type = "indel"	
+varscan.calls.hgvs <- rbind(varscan.snvs.hgvs, varscan.indels.hgvs)	
+	
+# clean up - remove unused datasets	
+rm(varscan.snvs)	
+rm(varscan.indels)	
+rm(varscan.snvs.hgvs)	
+rm(varscan.indels.hgvs)	
+	
+# rename columns	
+colnames(varscan.calls) <- c("sample", "chr", "pos", "external_id", "ref", "alt", "qual", "filter",	
+                            "depth", "somatic_status", "ssc", "gpv", "somatic_p_value", "cda",	
+                            "KG_validated", "om", "pm", "gmaf", "gt_normal", "gt_tumor", "gq_normal", "gq_tumor",	
+                            "depth_normal", "depth_tumor", "ref_reads_normal", "ref_reads_tumor",	
+                            "var_reads_normal", "var_reads_tumor", "allele_freq_normal", "allele_freq_tumor",	
+                            "depth4_normal", "depth4_tumor", "effect", "impact", "fun_class", "codon",	
+                            "HGVS", "gene", "biotype", "coding", "transcript_id", "exon_rank", "type")	
+colnames(varscan.calls.hgvs) <- colnames(varscan.calls)	
+	
+# create a tumor_id column based on the sample id (format is <tumor_id>_<normal_id>) - e.g. GE0556B_GE0556-N	
+#varscan.calls$tumor_id <- gsub("(.*)\\_(.*)","\\1", varscan.calls$sample)	
+#varscan.calls.hgvs$tumor_id <- gsub("(.*)\\_(.*)","\\1", varscan.calls.hgvs$sample)	
+
+# create a tumor_id column based on the sample id (format is <tumor_id>_<normal_id>) - e.g. GE0556B_GE0556-N
+varscan.calls$tumor_id <- gsub("(.*)\\_(.*)","\\1", varscan.calls$sample)
+varscan.calls.hgvs$tumor_id <- gsub("(.*)\\_(.*)","\\1", varscan.calls.hgvs$sample)
+# similarly create a normal_id column
+varscan.calls$normal_id <- gsub("(.*)\\_(.*)","\\2", varscan.calls$sample)
+varscan.calls.hgvs$normal_id <- gsub("(.*)\\_(.*)","\\2", varscan.calls.hgvs$sample)
+
+# remove unneeded columns and rearrange as necessary	
+# last few columns are for initial filtering and reference and can be removed later	
+keeps <- c("tumor_id", "normal_id", "chr", "pos", "gene", "codon", "ref", "alt", "HGVS",	
+           "somatic_p_value", "allele_freq_normal", "allele_freq_tumor", 	
+           "depth4_normal", "depth4_tumor", "var_reads_normal", "var_reads_tumor", 	
+           "effect", "impact", "fun_class", "transcript_id", "external_id", 	
+           "filter", "somatic_status", "gmaf", "gt_normal", "gt_tumor", "type")	
+varscan.calls <- varscan.calls[keeps]	
+	
+# we only need key and HGVS information from the HGVS dataset	
+keeps <- c("tumor_id", "chr", "pos", "gene", "ref", "alt", "HGVS", 	
+           "effect", "filter", "somatic_status", "gmaf", "type")	
+varscan.calls.hgvs <- varscan.calls.hgvs[keeps]	
+	
+# remove "%" from the allele frequency	
+varscan.calls$allele_freq_normal <- gsub("(.*)\\%(.*)","\\1", varscan.calls$allele_freq_normal)	
+varscan.calls$allele_freq_tumor <- gsub("(.*)\\%(.*)","\\1", varscan.calls$allele_freq_tumor)	
+	
+# split the HGVS column into HGVS protein and HGVS cds	
+# NB: need to account for cases that migth not have one or both	
+# e.g. in many cases, there will only be the CDS annotation present - in cases like this, it will get assigned to the first column listed in the "into" parameter of separate	
+varscan.calls.hgvs <-	
+  separate(data = varscan.calls.hgvs,	
+           col = HGVS,	
+           into = c("HGVS_protein_snpEff_4.2", "HGVS_cds_snpEff_4.2"),	
+           sep = "/",	
+           remove = TRUE,	
+           fill = "left")	
+	
+# mappings for 3-letter amino acids to 1-letter amino acid codes	
+AA.replaces <- data.frame(from = c("Ala", "Arg", "Asn", "Asp", "Asx", "Cys", "Glu", "Gln", "Glx", "Gly", "His", 	
+                                   "Ile", "Leu", "Lys", "Met", "Phe", "Pro", "Ser", "Thr", "Trp", "Tyr", "Val"), 	
+                          to = c("A", "R", "N", "D", "B", "C", "E", "Q", "Z", "G", "H", 	
+                                 "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"))	
+	
+varscan.calls.hgvs <- FindReplace(data = varscan.calls.hgvs, 	
+                                    Var = "HGVS_protein_snpEff_4.2",	
+                                    replaceData = AA.replaces,	
+                                    from = "from",	
+                                    to = "to",	
+                                    exact = FALSE)	
+	
+# replace NA values with blanks in the HGVS_protein_snpEff_4.2 column
+varscan.calls.hgvs$HGVS_protein_snpEff_4.2 <- sapply(varscan.calls.hgvs$HGVS_protein_snpEff_4.2, as.character)
+varscan.calls.hgvs$HGVS_protein_snpEff_4.2[is.na(varscan.calls.hgvs$HGVS_protein_snpEff_4.2)] <- " "
+
+# filter varscan calls for somatic calls (SS = 2, GMAF < 0.001 [if available]) and have a PASS filter	
+varscan.calls <- filter(varscan.calls, somatic_status == 2 & filter == 'PASS' & (gmaf < 0.01 | is.na(gmaf)) & somatic_p_value < 0.05)	
+varscan.calls.hgvs <- filter(varscan.calls.hgvs, somatic_status == 2 & filter == 'PASS' & (gmaf < 0.01 | is.na(gmaf)))	
+	
+# remove duplicates (e.g. due to multiple effects) in the HGVS dataset	
+varscan.calls.hgvs <- unique(varscan.calls.hgvs)	
+	
+# filter HGVS calls for obvious effects	
+varscan.calls <- unique(rbind(	
+                varscan.calls[grep("FRAME_SHIFT", varscan.calls$effect), ],	
+                varscan.calls[grep("SPLICE_SITE_ACCEPTOR", varscan.calls$effect), ],	
+                varscan.calls[grep("SPLICE_SITE_DONOR", varscan.calls$effect), ],	
+                varscan.calls[grep("CODON_CHANGE_PLUS_CODON_DELETION", varscan.calls$effect), ],	
+                varscan.calls[grep("CODON_DELETION", varscan.calls$effect), ],	
+                varscan.calls[grep("CODON_INSERTION", varscan.calls$effect), ],	
+                varscan.calls[grep("NON_SYNONYMOUS_CODING", varscan.calls$effect), ],	
+                varscan.calls[grep("NON_SYNONYMOUS_START", varscan.calls$effect), ],	
+                varscan.calls[grep("START_GAINED", varscan.calls$effect), ],	
+                varscan.calls[grep("START_LOST", varscan.calls$effect), ],	
+                varscan.calls[grep("STOP_GAINED", varscan.calls$effect), ],	
+                varscan.calls[grep("STOP_LOST", varscan.calls$effect), ],	
+                varscan.calls[grep("UTR_3_PRIME", varscan.calls$effect), ],
+                varscan.calls[grep("UTR_5_PRIME", varscan.calls$effect), ]
+                ))	
+	
+varscan.calls.hgvs <- unique(rbind(	
+                varscan.calls.hgvs[grep("FRAME_SHIFT", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("SPLICE_SITE_ACCEPTOR", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("SPLICE_SITE_DONOR", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("CODON_CHANGE_PLUS_CODON_DELETION", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("CODON_DELETION", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("CODON_INSERTION", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("NON_SYNONYMOUS_CODING", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("NON_SYNONYMOUS_START", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("START_GAINED", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("START_LOST", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("STOP_GAINED", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("STOP_LOST", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("UTR_3_PRIME", varscan.calls.hgvs$effect), ],	
+                varscan.calls.hgvs[grep("UTR_5_PRIME", varscan.calls.hgvs$effect), ]	
+                ))	
+	
+varscan.calls$combine = as.character(paste(	
+  varscan.calls$tumor_id, 	
+  varscan.calls$chr, 	
+  varscan.calls$pos, 	
+  varscan.calls$ref,	
+  varscan.calls$alt,	
+  sep = "."	
+  ))	
+	
+varscan.calls.hgvs$combine = as.character(paste(	
+  varscan.calls.hgvs$tumor_id, 	
+  varscan.calls.hgvs$chr, 	
+  varscan.calls.hgvs$pos, 	
+  varscan.calls.hgvs$ref,	
+  varscan.calls.hgvs$alt,	
+  sep = "."	
+  ))	
+	
+# use combine as a hash key to map HGVS data from SnpEff-4.2 dataset to the SnpEff-4.0 dataset (should not just be appending columns as with current setup)	
+	
+# dataNew:	
+# lookupVariable - variable in parent data that we want to match against (e.g. "varscan.calls$combine")	
+# lookupValue - value of lookupVariable to match against (e.g. list of values under varscan.hgvs$combine)	
+# newVariable - variable to be changed (e.g. "HGVS_protein_snpEff_4.2", "HGVS_cds_snpEff_4.2")	
+# newValue - value of newVariable for matched rows (e.g. the values corresponding to the combine key in lookupVlaue and under the column newVariable)	
+	
+# to apply addNewData.R:	
+# create dataNew, by creating a 4-column matrix as follows:	
+# 1. first column (lookupVariable) contains only the values "combine" - this should be added at the end	
+# 2. second column (lookupValue) is a copy of varscan.hgvs$combine	
+# 3. third column (newVariable) contains either the value "HGVS_protein_snpEff_4.2" or "HGVS_cds_snpEff_4.2"	
+# 4. fourth column (newValue) contains the actual HGVS, and is a copy of varscan.hgvs$HGVS_protein_snpEff_4.2 or varscan.hgvs$HGVS_cds_snpEff_4.2	
+	
+newData.protein <- varscan.calls.hgvs[,c("combine","HGVS_protein_snpEff_4.2")]	
+colnames(newData.protein) <- c("lookupValue", "newValue")	
+newData.protein$newVariable <- "HGVS_protein_snpEff_4.2"	
+	
+newData.cds <- varscan.calls.hgvs[,c("combine","HGVS_cds_snpEff_4.2")]	
+colnames(newData.cds) <- c("lookupValue", "newValue")	
+newData.cds$newVariable <- "HGVS_cds_snpEff_4.2"	
+	
+newData <- rbind(newData.protein, newData.cds)	
+newData$lookupVariable <- "combine"	
+newData <- newData[c("lookupVariable", "lookupValue", "newVariable", "newValue")] # rearrange columns	
+write.csv(newData, "newData.csv", row.names = FALSE, quote = FALSE)	
+	
+source("/Volumes/shung/scripts/addNewData.R")	
+allowedVars <- c("HGVS_protein_snpEff_4.2", "HGVS_cds_snpEff_4.2")	
+varscan.calls.hgvs.merge <- addNewData("newData.csv", varscan.calls, allowedVars)	
+
+```
+	
+ 	
+## Load strelka dataset and intersect with filtered VarScan	
+ 	
+```{r}	
+#strelka_file <- args[5]	
+strelka_snvs_file <- "strelka/passed.snvs.txt"
+strelka_indels_file <- "strelka/passed.indels.txt"
+	
+strelka_snvs <- read.table(strelka_snvs_file, sep="\t", header=FALSE)
+strelka_indels <- read.table(strelka_indels_file, sep="\t", header=FALSE)	
+	
+# extract only columns of interest	
+strelka_snvs <- strelka_snvs[,c("V1", "V2", "V3", "V5", "V6")]
+strelka_indels <- strelka_indels[,c("V1", "V2", "V3", "V5", "V6")]	
+	
+# rename columns	
+colnames(strelka_snvs) <- c("tumor_id", "chr", "pos", "ref", "alt")	
+colnames(strelka_indels) <- c("tumor_id", "chr", "pos", "ref", "alt")	
+strelka_snvs$type <- "snv"	
+strelka_indels$type <- "indel"	
+
+# combine snvs and indels
+strelka.calls <- rbind(strelka_snvs, strelka_indels)	
+rm(strelka_snvs)
+rm(strelka_indels)
+	
+# include mutation type for finding overlap with strelka (since we are only interested in SNVs)	
+varscan.calls.hgvs.merge$combine <- as.character(paste(	
+  varscan.calls.hgvs.merge$type,	
+  varscan.calls.hgvs.merge$tumor_id, 	
+  varscan.calls.hgvs.merge$chr, 	
+  varscan.calls.hgvs.merge$pos, 	
+  varscan.calls.hgvs.merge$ref,	
+  varscan.calls.hgvs.merge$alt,	
+  sep = "."	
+  ))	
+	
+strelka.calls$combine = as.character(paste(	
+  strelka.calls$type,	
+  strelka.calls$tumor_id,	
+  strelka.calls$chr,	
+  strelka.calls$pos,	
+  strelka.calls$ref,	
+  strelka.calls$alt,	
+  sep = "."	
+  ))	
+	
+overlap <- intersect(varscan.calls.hgvs.merge$combine, strelka.calls$combine)  	
+calls.overlap <- subset(varscan.calls.hgvs.merge, varscan.calls.hgvs.merge$combine %in% overlap)	
+calls.overlap$in_strelka = "1"	
+	
+# do some cleanup	
+rm(varscan.calls)	
+rm(varscan.calls.hgvs)	
+rm(varscan.calls.hgvs.merge)	
+rm(newData)	
+
+# keep columns of interest
+keeps <- c("tumor_id", "normal_id", "chr", "pos", "gene", "type", "ref", "alt", "HGVS", "somatic_p_value", "allele_freq_normal", "allele_freq_tumor", "depth4_normal", "depth4_tumor", "var_reads_normal", "var_reads_tumor", "effect", "impact", "fun_class", "transcript_id", "external_id", "gmaf", "gt_normal", "gt_tumor", "in_strelka")
+
+calls.overlap <- calls.overlap[keeps]
+
+# sort the calls by case, chr, then position	
+calls.overlap <- arrange(calls.overlap, tumor_id, chr, pos)	
+	
+#output_dir <- args[6]	
+output_dir <- "calls.integration"
+setwd(output_dir)
+
+# temporary
+calls.overlap <- unique
+write.table(calls.overlap, "calls-varscan_intersect_strelka.txt", sep = "\t", quote = FALSE, row.names = FALSE)	
+
+```
+
+## Preliminary analysis
+
+```{r}
+library(ggplot2)
+
+# remove genes that are not mutated
+calls.overlap$gene <- factor(calls.overlap$gene)
+
+# sort by decreasing number of mutations per gene
+calls.overlap <- within(calls.overlap, gene <- factor(gene, levels=names(sort(table(gene), decreasing=FALSE))))
+
+# plot
+g <- ggplot(calls.overlap, aes(gene))
+g + geom_bar(aes(fill = tumor_id), position = position_stack(reverse = TRUE)) +
+  coord_flip() +
+  theme(legend.position = "bottom")
+
+# show recurrent genes (proportion of cases mutated per gene)
+
+NUM_CASES = length(unique(calls.overlap$tumor_id))
+
+# get absolute number of mutated cases
+calls.unique_by_case <- unique(calls.overlap[c("tumor_id", "gene")])
+gene.num_cases_mutated <- as.data.frame(table(calls.unique_by_case$gene))
+
+# calculate proportion based on number of cases
+gene.num_cases_mutated$proportion <- gene.num_cases_mutated$Freq / NUM_CASES * 100
+
+colnames(gene.num_cases_mutated) <- c("gene", "freq", "proportion")
+
+# write out to file for future referencing
+write.table(gene.num_cases_mutated, "/Volumes/shung/projects/gzl_targeted/pilot/gene_mutation_frequencies.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+# reorder genes by increasing frequency in PMBCL dataset
+gene.num_cases_mutated$gene <- factor(gene.num_cases_mutated$gene, 
+                                       levels = gene.num_cases_mutated$gene[order(gene.num_cases_mutated$proportion)])
+
+p <- ggplot(data=gene.num_cases_mutated, aes(x = gene, y = proportion)) +
+  geom_bar(stat="identity", position=position_dodge(), width = 0.8) +
+  ylab("Cases mutated (%)") + xlab("") +
+  theme_bw() +
+  theme(legend.position="bottom") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"),
+        axis.text.y  = element_text(size=12), 
+        axis.title.y = element_text(size = 14),
+        plot.margin = unit(c(1,1,1,1), "cm"))
+```
+
+## Analysis of panel genes - coverage etc.
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+
+# read in coverage data
+coverage <- read.table("/Volumes/shung/projects/gzl_targeted/pilot/metrics/all.interval_hs_metrics.txt", sep = "\t", header = TRUE)
+failures <- c("GZ-205-Macro-FFPEbis")
+coverage <- filter(coverage, !(coverage$sampleID %in% failures))
+coverage$sampleID <- factor(coverage$sampleID)
+
+# get mean coverage for each probe
+coverage.mean_gene <- t(acast(coverage, sampleID ~ name, fun.aggregate = mean, value.var = "mean_coverage"))
+write.table(coverage.mean_gene, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/coverage-mean_per_gene.txt", sep = "\t", quote = FALSE)
+
+# get mean coverage for each gene
+# first create a "probe name"
+coverage$probe <- paste(coverage$chrom, coverage$start, coverage$end, sep = ".")
+coverage.mean_probe <- t(acast(coverage, sampleID ~ probe, fun.aggregate = mean, value.var = "mean_coverage"))
+write.table(coverage.mean_probe, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/coverage-mean_per_probe.txt", sep = "\t", quote = FALSE)
+
+p0 <- ggplot(coverage, aes(name, mean_coverage)) + 
+  geom_boxplot() +
+  xlab ("") + ylab("Mean coverage") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
+p1 <- ggplot(coverage, aes(name, mean_coverage)) + 
+  geom_boxplot() +
+  xlab ("") + ylab("Mean coverage") +
+  ylim(0, 2000) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
+p2 <- ggplot(coverage, aes(name, mean_coverage)) + 
+  geom_boxplot() +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
+
+grid.arrange(p0, p1, p2, ncol = 1)
+
+p3 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
+  geom_boxplot() +
+  xlab ("") + ylab("Mean coverage") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
+p4 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
+  geom_boxplot() +
+  ylim(0, 2000) +
+  xlab ("") + ylab("Mean coverage") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
+p5 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
+  geom_boxplot() +
+  scale_y_continuous(trans = 'log2') +
+  xlab ("") + ylab("Mean coverage") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
+
+grid.arrange(p3, p4, p5, ncol = 1)
+
+```
