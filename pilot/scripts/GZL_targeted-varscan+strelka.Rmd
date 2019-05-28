@@ -48,9 +48,8 @@ library(DataCombine) # find and replace
 # use SnpEff-4.0 for effect annotation	
 #varscan_snvs.snpEff_4.0 <- args[1]	
 #varscan_indels.snpEff_4.0 <- args[2]	
-setwd("/Volumes/shung/projects/gzl_targeted/pilot/")
-varscan_snvs.snpEff_4.0 <- "varScan-snpEff-4.0/all.paired_samples.varScan.snps.snpEff.snps_annotated.cosmic_annotated.txt"
-varscan_indels.snpEff_4.0 <- "varScan-snpEff-4.0/all.paired_samples.varScan.indels.snpEff_canonical.indels_annotated.txt"
+varscan_snvs.snpEff_4.0 <- "/Volumes/shung/projects/gzl_targeted/pilot/varScan-snpEff-4.0/all.paired_samples.varScan.snps.snpEff.snps_annotated.cosmic_annotated.txt"
+varscan_indels.snpEff_4.0 <- "/Volumes/shung/projects/gzl_targeted/pilot/varScan-snpEff-4.0/all.paired_samples.varScan.indels.snpEff_canonical.indels_annotated.txt"
 
 # read in the files	
 varscan.snvs <- read.table(varscan_snvs.snpEff_4.0, sep = "\t", header = TRUE, fill = TRUE)	
@@ -63,8 +62,8 @@ varscan.calls <- rbind(varscan.snvs, varscan.indels)
 # use SnpEff-4.2 for HGVS annotation	
 #varscan_snvs.snpEff_4.2 <- args[3]	
 #varscan_indels.snpEff_4.2 <- args[4]	
-varscan_snvs.snpEff_4.2 <- "varScan-snpEff-4.2/all.paired_samples.varScan.snps.snpEff.snps_annotated.cosmic_annotated.txt"
-varscan_indels.snpEff_4.2 <- "varScan-snpEff-4.2/all.paired_samples.varScan.indels.snpEff_canonical.indels_annotated.txt"
+varscan_snvs.snpEff_4.2 <- "/Volumes/shung/projects/gzl_targeted/pilot/varScan-snpEff-4.2/all.paired_samples.varScan.snps.snpEff.snps_annotated.cosmic_annotated.txt"
+varscan_indels.snpEff_4.2 <- "/Volumes/shung/projects/gzl_targeted/pilot/varScan-snpEff-4.2/all.paired_samples.varScan.indels.snpEff_canonical.indels_annotated.txt"
 
 # read in the files	
 varscan.snvs.hgvs <- read.table(varscan_snvs.snpEff_4.2, sep = "\t", header = TRUE, fill = TRUE)	
@@ -150,11 +149,11 @@ varscan.calls.hgvs$HGVS_protein_snpEff_4.2[is.na(varscan.calls.hgvs$HGVS_protein
 # filter varscan calls for somatic calls (SS = 2, GMAF < 0.001 [if available]) and have a PASS filter	
 varscan.calls <- filter(varscan.calls, somatic_status == 2 & filter == 'PASS' & (gmaf < 0.01 | is.na(gmaf)) & somatic_p_value < 0.05)	
 varscan.calls.hgvs <- filter(varscan.calls.hgvs, somatic_status == 2 & filter == 'PASS' & (gmaf < 0.01 | is.na(gmaf)))	
-	
+
 # remove duplicates (e.g. due to multiple effects) in the HGVS dataset	
 varscan.calls.hgvs <- unique(varscan.calls.hgvs)	
 	
-# filter HGVS calls for obvious effects	
+# filter HGVS calls for obvious effects	- exclude UTR mutations
 varscan.calls <- unique(rbind(	
                 varscan.calls[grep("FRAME_SHIFT", varscan.calls$effect), ],	
                 varscan.calls[grep("SPLICE_SITE_ACCEPTOR", varscan.calls$effect), ],	
@@ -167,10 +166,10 @@ varscan.calls <- unique(rbind(
                 varscan.calls[grep("START_GAINED", varscan.calls$effect), ],	
                 varscan.calls[grep("START_LOST", varscan.calls$effect), ],	
                 varscan.calls[grep("STOP_GAINED", varscan.calls$effect), ],	
-                varscan.calls[grep("STOP_LOST", varscan.calls$effect), ],	
-                varscan.calls[grep("UTR_3_PRIME", varscan.calls$effect), ],
-                varscan.calls[grep("UTR_5_PRIME", varscan.calls$effect), ]
+                varscan.calls[grep("STOP_LOST", varscan.calls$effect), ]
                 ))	
+#                varscan.calls[grep("UTR_3_PRIME", varscan.calls$effect), ],
+#                varscan.calls[grep("UTR_5_PRIME", varscan.calls$effect), ]
 	
 varscan.calls.hgvs <- unique(rbind(	
                 varscan.calls.hgvs[grep("FRAME_SHIFT", varscan.calls.hgvs$effect), ],	
@@ -184,10 +183,19 @@ varscan.calls.hgvs <- unique(rbind(
                 varscan.calls.hgvs[grep("START_GAINED", varscan.calls.hgvs$effect), ],	
                 varscan.calls.hgvs[grep("START_LOST", varscan.calls.hgvs$effect), ],	
                 varscan.calls.hgvs[grep("STOP_GAINED", varscan.calls.hgvs$effect), ],	
-                varscan.calls.hgvs[grep("STOP_LOST", varscan.calls.hgvs$effect), ],	
-                varscan.calls.hgvs[grep("UTR_3_PRIME", varscan.calls.hgvs$effect), ],	
-                varscan.calls.hgvs[grep("UTR_5_PRIME", varscan.calls.hgvs$effect), ]	
+                varscan.calls.hgvs[grep("STOP_LOST", varscan.calls.hgvs$effect), ]
                 ))	
+
+#                varscan.calls.hgvs[grep("UTR_3_PRIME", varscan.calls.hgvs$effect), ],	
+#                varscan.calls.hgvs[grep("UTR_5_PRIME", varscan.calls.hgvs$effect), ]	
+
+# additional filters
+# 1. Remove mutations with both 1000 genomes ids and rs id
+varscan.calls <- unique(rbind(varscan.calls[!grepl("1000G", varscan.calls$external_id), ]))
+# 2. Remove non-panel genes
+genes.panel <- read.table("/Volumes/shung/projects/gzl_exomes/data/target_panel_Agilent_genes.txt", header=FALSE)
+genes.panel <- as.vector(genes.panel$V1)
+varscan.calls <- filter(varscan.calls, varscan.calls$gene %in% genes.panel)
 	
 varscan.calls$combine = as.character(paste(	
   varscan.calls$tumor_id, 	
@@ -246,8 +254,8 @@ varscan.calls.hgvs.merge <- addNewData("newData.csv", varscan.calls, allowedVars
  	
 ```{r}	
 #strelka_file <- args[5]	
-strelka_snvs_file <- "strelka/passed.snvs.txt"
-strelka_indels_file <- "strelka/passed.indels.txt"
+strelka_snvs_file <- "/Volumes/shung/projects/gzl_targeted/pilot/strelka/passed.snvs.txt"
+strelka_indels_file <- "/Volumes/shung/projects/gzl_targeted/pilot/strelka/passed.indels.txt"
 	
 strelka_snvs <- read.table(strelka_snvs_file, sep="\t", header=FALSE)
 strelka_indels <- read.table(strelka_indels_file, sep="\t", header=FALSE)	
@@ -307,12 +315,10 @@ calls.overlap <- calls.overlap[keeps]
 calls.overlap <- arrange(calls.overlap, tumor_id, chr, pos)	
 	
 #output_dir <- args[6]	
-output_dir <- "calls.integration"
-setwd(output_dir)
 
 # temporary
-calls.overlap <- unique
-write.table(calls.overlap, "calls-varscan_intersect_strelka.txt", sep = "\t", quote = FALSE, row.names = FALSE)	
+calls.overlap <- unique(calls.overlap)
+write.table(calls.overlap, "/Volumes/shung/projects/gzl_targeted/pilot/calls.integration/calls-varscan_intersect_strelka_v2.txt", sep = "\t", quote = FALSE, row.names = FALSE)	
 
 ```
 
@@ -347,7 +353,7 @@ gene.num_cases_mutated$proportion <- gene.num_cases_mutated$Freq / NUM_CASES * 1
 colnames(gene.num_cases_mutated) <- c("gene", "freq", "proportion")
 
 # write out to file for future referencing
-write.table(gene.num_cases_mutated, "/Volumes/shung/projects/gzl_targeted/pilot/gene_mutation_frequencies.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(gene.num_cases_mutated, "/Volumes/shung/projects/gzl_targeted/pilot/gene_mutation_frequencies-panel.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 
 # reorder genes by increasing frequency in PMBCL dataset
 gene.num_cases_mutated$gene <- factor(gene.num_cases_mutated$gene, 
@@ -387,6 +393,14 @@ coverage$probe <- paste(coverage$chrom, coverage$start, coverage$end, sep = ".")
 coverage.mean_probe <- t(acast(coverage, sampleID ~ probe, fun.aggregate = mean, value.var = "mean_coverage"))
 write.table(coverage.mean_probe, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/coverage-mean_per_probe.txt", sep = "\t", quote = FALSE)
 
+# find low coverage probes
+coverage.mean_probe.df <- as.data.frame(coverage.mean_probe)
+coverage.mean_probe.df$sum <- rowSums(coverage.mean_probe.df[,colnames(coverage.mean_probe.df)])
+CUTOFF = 500*12
+coverage.mean_probe.low <- subset(coverage.mean_probe.df, coverage.mean_probe.df$sum < CUTOFF)
+write.table(coverage.mean_probe.low, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/low_coverage_probes.500X_cutoff.txt", quote = FALSE)
+
+# gene-level coverage
 p0 <- ggplot(coverage, aes(name, mean_coverage)) + 
   geom_boxplot() +
   xlab ("") + ylab("Mean coverage") +
@@ -404,6 +418,50 @@ p2 <- ggplot(coverage, aes(name, mean_coverage)) +
 
 grid.arrange(p0, p1, p2, ncol = 1)
 
+# faceted by gene
+# split into subsets of genes
+genes.gp1 <- c("ABCA13", "ABCC6", "ABCD2", "ACTB", "ADAP1", "AKAP6", "AMOT", "ARHGAP29", "ARID1A", "ARID5B", "ASCC3", "ASXL2", "ATM", "ATP13A4", "B2M", "BARX2", "BCL2", "BCL7A", "BIRC6", "BRPF1", "BRWD3", "BTG1", "C2CD3", "CARD11", "CCND3", "CD274", "CD58", "CD70", "CD79B", "CD83", "CIITA", "CISH", "COL13A1", "COL24A1", "CREBBP", "CSF2RB", "CSMD3", "CTNND2", "CXCR5", "DDX3X", "DDX60", "DHX58", "DIAPH3", "DSC2", "DUSP2", "DYNC1H1", "EBF1", "EEF1A1", "EGR1", "EHMT2", "EMD", "EP300", "EPHA7", "ETS1")
+
+genes.gp2 <- c("ETV6", "EZH2", "FADD", "FAS", "FBXO38", "FLT4", "FOXO1", "FPGT", "GCNT4", "GCSAM", "GNA13", "GPR137C", "GRIA4", "GRIN3A", "HCFC1", "HDAC4", "HEXIM1", "HIST1H1B", "HIST1H1C", "HIST1H1D", "HIST1H1E", "HIST1H2BC", "HIST1H3B", "HIST1H3D", "HIST1H4C", "HIST1H4E", "HIST1H4H", "HIST1H4J", "HLA-B", "IFNL3", "IKBKB", "IKZF3", "IL13RA1", "IL1RAPL2", "IL4R", "INPP5D", "IRF2BP2", "IRF4", "IRF8", "ITPKB", "JAK1", "JUNB", "KCNQ3", "KLF2", "KMT2A", "KMT2C", "KMT2D", "LAMB1", "LMF2", "LMTK2", "LRRN3", "LTB", "LTBP3", "MAF")
+
+genes.gp3 <- c("MAGEC2", "MAP2K1", "MAPK6", "MCL1", "MEF2B", "MFHAS1", "MPDZ", "MS4A1", "MSH6", "MYC", "MYD88", "NBPF6", "NCOR1", "NCOR2", "NEK1", "NF1", "NFATC3", "NFKB2", "NFKBIA", "NFKBIB", "NFKBIE", "NFKBIZ", "NLRP4", "NONO", "NOTCH1", "NOTCH2", "NSD1", "NUP214", "P2RY8", "PCBP1", "PDCD1LG2", "PIK3C2G", "PIM1", "PIM2", "PLXND1", "POM121L12", "POU2AF1", "POU2F2", "POU4F3", "PRDM16", "PRDM9", "PRKDC", "PRUNE2", "PTBP1", "PTEN", "PTPN1", "PTPN6", "PTPRN2", "RC3H2", "RELB", "RELN", "RGS1", "RHOA", "RIBC2")
+
+genes.gp4 <- c("RNF217", "SEMA3E", "SETD1B", "SETD2", "SETD5", "SETDB1", "SGK1", "SGPP1", "SHCBP1", "SHISA6", "SIAH2", "SLC6A3", "SOCS1", "SPEN", "SPOP", "SPSB4", "SRSF1", "SRSF2", "STAT3", "STAT5B", "STAT6", "TAB1", "TAF1", "TBC1D4", "TBL1XR1", "TCF3", "TET2", "THRA", "TIGD3", "TMEM30A", "TMSB4X", "TNFAIP3", "TNFAIP8L3", "TNFRSF14", "TNIP1", "TOPBP1", "TP53", "TP53BP1", "TRAF1", "TRAF2", "TRAF3", "TRPS1", "UBE2A", "USP5", "VMP1", "WDFY3", "WEE1", "XBP1", "XCR1", "XPO1", "YY1", "ZEB2", "ZFP36L1", "ZNF217", "ZNF423")
+
+coverage.gp1 <- filter(coverage, coverage$name %in% genes.gp1)
+coverage.gp2 <- filter(coverage, coverage$name %in% genes.gp2)
+coverage.gp3 <- filter(coverage, coverage$name %in% genes.gp3)
+coverage.gp4 <- filter(coverage, coverage$name %in% genes.gp4)
+
+p.gp1 <- ggplot(coverage.gp1, aes(x = sampleID, y = mean_coverage)) + 
+  geom_boxplot(alpha = 0.7) +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
+p.gp1 + facet_grid(name ~ .)
+
+p.gp2 <- ggplot(coverage.gp2, aes(x = sampleID, y = mean_coverage)) + 
+  geom_boxplot(alpha = 0.7) +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
+p.gp2 + facet_grid(name ~ .)
+
+p.gp3 <- ggplot(coverage.gp3, aes(x = sampleID, y = mean_coverage)) + 
+  geom_boxplot(alpha = 0.7) +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
+p.gp3 + facet_grid(name ~ .)
+
+p.gp4 <- ggplot(coverage.gp4, aes(x = sampleID, y = mean_coverage)) + 
+  geom_boxplot(alpha = 0.7) +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
+p.gp4 + facet_grid(name ~ .)
+
+# sample-level coverage
 p3 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
   geom_boxplot() +
   xlab ("") + ylab("Mean coverage") +
@@ -420,5 +478,24 @@ p5 <- ggplot(coverage, aes(sampleID, mean_coverage)) +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
 
 grid.arrange(p3, p4, p5, ncol = 1)
+
+# distribution of coverage
+
+d1 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
+    geom_density() +
+    xlab("Mean coverage") + ylab("Density") +
+    xlim(0, 2000)
+d2 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
+    geom_density() +
+    xlab("Mean coverage") + ylab("Density") +
+    xlim(0, 500)
+d3 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
+    geom_density() +
+    xlab("Mean coverage") + ylab("Density") +
+    xlim(0, 200)
+grid.arrange(d1, d2, d3, ncol=1)
+#geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
+#ylim(0, max_y_intercept+0.25*max_y_intercept) +
+#theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
 
 ```
