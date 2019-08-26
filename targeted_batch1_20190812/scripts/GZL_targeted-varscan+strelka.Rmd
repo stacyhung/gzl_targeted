@@ -198,7 +198,8 @@ varscan.calls <- filter(varscan.calls, varscan.calls$gene %in% genes.panel)
 #                   (ii) remove all variants with an dbSNP id and combine with list from (i)
 varscan.calls_rs.and.cosm <- filter(varscan.calls, grepl(";COSM", varscan.calls$external_id) & normal_id == "pooledN")
 temp <- filter(varscan.calls, !grepl("rs", varscan.calls$external_id) & normal_id == "pooledN") 
-varscan.calls <- rbind(varscan.calls_rs.and.cosm, temp)
+varscan.calls_not.pooledN <- filter(varscan.calls, normal_id != "pooledN")
+varscan.calls <- rbind(varscan.calls_rs.and.cosm, temp, varscan.calls_not.pooledN)
 
 varscan.calls$combine = as.character(paste(	
   varscan.calls$tumor_id, 	
@@ -321,7 +322,7 @@ calls.overlap <- arrange(calls.overlap, tumor_id, chr, pos)
 
 # temporary
 calls.overlap <- unique(calls.overlap)
-write.table(calls.overlap, "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/calls.integration/calls-varscan_intersect_strelka.txt", sep = "\t", quote = FALSE, row.names = FALSE)	
+write.table(calls.overlap, "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/calls.integration/calls-varscan_intersect_strelka_v2.txt", sep = "\t", quote = FALSE, row.names = FALSE)	
 
 ```
 
