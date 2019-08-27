@@ -1,0 +1,163 @@
+---	
+title: "Intersect VarScan and Strelka"	
+author: "Stacy Hung"	
+date: "May 24, 2019"	
+output: html_document	
+---	
+	
+This script performs the following tasks:	
+- reads in master file snv/indel results (summarized by canonical transcript and including batch and tumor content)
+- plots distribution of tumor allele frequency per tumor sample, with information on tumor content
+- plots #s of mutations per sample, stacked by variant class
+- plots mutation frequency by panel gene (across total cohort) incl. non-mutated genes
+ 	
+## Load libraries
+ 	
+```{r}
+library(dplyr)    # filter	
+library(tidyr)    # separate	
+```
+
+## Load master list of SNVs/indels
+
+```{r}
+calls.all <- read.table("/Volumes/shung/projects/gzl_targeted/gzl_targeted-master-snvs_indels.txt", sep = "\t", header = TRUE, fill = TRUE)
+```
+
+## Plot distribution of allele frequencies by tumor sample and include estimated tumor content
+
+```{r}
+library(gridExtra)
+library(gtable)
+library(ggplot2)
+
+# for each sample, create AF density plot with vertical at peak value
+AF.plots <- vector('list', length(unique(calls.all$case_id)))
+for (i in seq_along(unique(calls.all$case_id))) {
+  temp <- subset(calls.all, calls.all$case_id == unique(calls.all$case_id)[i])
+  
+  num_mutations <- nrow(temp)
+  
+  # identify peak value for current sample
+  max_y_density <- which.max(density(temp$allele_freq_tumor)$y)
+  max_x_intercept <- density(temp$allele_freq_tumor)$x[max_y_density]
+  max_y_intercept <- density(temp$allele_freq_tumor)$y[max_y_density]
+  
+  print(max_y_intercept)
+  
+  AF.plots[[i]] <- ggplot(temp, aes(as.numeric(allele_freq_tumor))) + 
+    geom_density() +
+    geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
+    xlab("Allele frequency (%)") + ylab("Density") +
+    annotate("text", 
+             y = max_y_intercept+0.2*max_y_intercept,
+             x = max(temp$allele_freq_tumor),
+             label = paste("Peak AF: ", round(max_x_intercept, digits = 2), "%", sep = ""),
+             hjust = 1) + 
+    theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
+    ylim(0, max_y_intercept+0.25*max_y_intercept) +
+    ggtitle(label = paste(temp$case_id, " (n = ", num_mutations, ")", "; Est T.C. = ", temp$est_tumor_content, "%", sep = ""))
+}
+#do.call("grid.arrange", c(AF.plots, ncol=1))
+grid.arrange(grobs = AF.plots, ncol=3, bottom = "Allele frequency (%)", left = "Density")
+
+#y = max(density(temp$allele_freq_tumor)$y),
+
+# plot all samples
+p <- ggplot(calls.all, aes(as.numeric(allele_freq_tumor), colour = tumor_id)) + 
+  geom_density() + 
+  xlab ("Allele frequency (%)") + 
+  ylab("Density")
+
+# faceted plot (one distribution per sample)
+p + facet_grid(tumor_id ~ ., scales = "free")
+
+# or organize plots into 2 columns
+p + facet_wrap(~ tumor_id, ncol=2)
+
+```
+
+## Plot total numbers of mutations stacked by variant class
+
+```{r}
+library(ggplot2)
+
+calls.all$class <- revalue(calls.all$effect, c("NON_SYNONYMOUS_CODING"="Missense", 
+                           "NON_SYNONYMOUS_START"="Missense",
+                           "START_GAINED"="Missense",
+                           "START_LOST"="Start Lost",
+                           "STOP_LOST"="Missense",
+                           "STOP_GAINED"="Nonsense",
+                           "STOP_GAINED+CODON_CHANGE_PLUS_CODON_DELETION"="Nonsense",
+                           "CODON_CHANGE_PLUS_CODON_DELETION"="In-frame Indel",
+                           "CODON_CHANGE_PLUS_CODON_INSERTION"="In-frame Indel",
+                           "CODON_DELETION"="In-frame Indel",
+                           "CODON_INSERTION"="In-frame Indel",
+                           "FRAME_SHIFT"="Frameshift Indel",
+                           "FRAME_SHIFT+START_LOST"="Frameshift Indel",
+                           "SPLICE_SITE_ACCEPTOR"="Splice site",
+                           "SPLICE_SITE_DONOR"="Splice site"
+                           ))
+
+
+data.df <- as.data.frame(table(calls.all$case_id, calls.all$class))
+colnames(data.df) <- c("case", "variant_class", "count")
+
+# sort by total number of mutations
+p <- ggplot(data = data.df, aes(x = case, y = count, fill = variant_class)) + 
+  geom_bar(stat = "identity", width = 0.6) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_fill_discrete(name = "Variant Class") +
+  xlab("") + ylab("Number of mutations")
+
+```
+
+
+## Preliminary analysis
+
+```{r}
+library(ggplot2)
+
+# remove genes that are not mutated
+calls.overlap$gene <- factor(calls.overlap$gene)
+
+# sort by decreasing number of mutations per gene
+calls.overlap <- within(calls.overlap, gene <- factor(gene, levels=names(sort(table(gene), decreasing=FALSE))))
+
+# plot
+g <- ggplot(calls.overlap, aes(gene))
+g + geom_bar(aes(fill = tumor_id), position = position_stack(reverse = TRUE)) +
+  coord_flip() +
+  theme(legend.position = "bottom")
+
+# show recurrent genes (proportion of cases mutated per gene)
+
+NUM_CASES = length(unique(calls.overlap$tumor_id))
+
+# get absolute number of mutated cases
+calls.unique_by_case <- unique(calls.overlap[c("tumor_id", "gene")])
+gene.num_cases_mutated <- as.data.frame(table(calls.unique_by_case$gene))
+
+# calculate proportion based on number of cases
+gene.num_cases_mutated$proportion <- gene.num_cases_mutated$Freq / NUM_CASES * 100
+
+colnames(gene.num_cases_mutated) <- c("gene", "freq", "proportion")
+
+# write out to file for future referencing
+write.table(gene.num_cases_mutated, "/Volumes/shung/projects/gzl_targeted/pilot/gene_mutation_frequencies-panel.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+# reorder genes by increasing frequency in PMBCL dataset
+gene.num_cases_mutated$gene <- factor(gene.num_cases_mutated$gene, 
+                                       levels = gene.num_cases_mutated$gene[order(gene.num_cases_mutated$proportion)])
+
+p <- ggplot(data=gene.num_cases_mutated, aes(x = gene, y = proportion)) +
+  geom_bar(stat="identity", position=position_dodge(), width = 0.8) +
+  ylab("Cases mutated (%)") + xlab("") +
+  theme_bw() +
+  theme(legend.position="bottom") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"),
+        axis.text.y  = element_text(size=12), 
+        axis.title.y = element_text(size = 14),
+        plot.margin = unit(c(1,1,1,1), "cm"))
+```
+
