@@ -22,6 +22,13 @@ library(tidyr)    # separate
 
 ```{r}
 calls.all <- read.table("/Volumes/shung/projects/gzl_targeted/gzl_targeted-master-snvs_indels.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+# calls corresponding to pooled normals
+calls.pooledN <- filter(calls.all, (calls.all$normal_id == "pooledN" | calls.all$normal_id == "BM1803125"))
+
+# calls for matched tumor-normal pairs 
+calls.matchedN <- filter(calls.all, calls.all$normal_id != "pooledN" & calls.all$normal_id != "BM1803125")
+
 ```
 
 ## Plot distribution of allele frequencies by tumor sample and include estimated tumor content
@@ -31,10 +38,16 @@ library(gridExtra)
 library(gtable)
 library(ggplot2)
 
+## AF distributions for tumors matched to a *POOLED* normal
+
+# sort case_id by est_tumor_content
+calls.pooledN <- calls.pooledN[order(calls.pooledN$est_tumor_content),]
+calls.pooledN$case_id <- factor(calls.pooledN$case_id)
+
 # for each sample, create AF density plot with vertical at peak value
-AF.plots <- vector('list', length(unique(calls.all$case_id)))
-for (i in seq_along(unique(calls.all$case_id))) {
-  temp <- subset(calls.all, calls.all$case_id == unique(calls.all$case_id)[i])
+AF.plots <- vector('list', length(unique(calls.pooledN$case_id)))
+for (i in seq_along(unique(calls.pooledN$case_id))) {
+  temp <- subset(calls.pooledN, calls.pooledN$case_id == unique(calls.pooledN$case_id)[i])
   
   num_mutations <- nrow(temp)
   
@@ -45,35 +58,80 @@ for (i in seq_along(unique(calls.all$case_id))) {
   
   print(max_y_intercept)
   
+  plot_label <- c(paste0("Peak AF: ", round(max_x_intercept, digits = 2), "% --", sep = ""))
+  plot_label_2 <- c(paste0("\nEst. heterozygous VAF --"))
+  #plot_label_3 <- c(paste0("\n\nEst. germline VAF (T.C.) --"))
+  
   AF.plots[[i]] <- ggplot(temp, aes(as.numeric(allele_freq_tumor))) + 
     geom_density() +
     geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
+    geom_vline(xintercept = as.numeric(temp$est_tumor_content / 2), col="blue", lty=2) +
+    geom_vline(xintercept = 50, size = 20, alpha = 0.4, col="grey") +
     xlab("Allele frequency (%)") + ylab("Density") +
-    annotate("text", 
-             y = max_y_intercept+0.2*max_y_intercept,
-             x = max(temp$allele_freq_tumor),
-             label = paste("Peak AF: ", round(max_x_intercept, digits = 2), "%", sep = ""),
-             hjust = 1) + 
+    annotate("text", x=Inf, y = Inf,
+             label = plot_label, color = "red",
+             vjust=1, hjust = 1) + 
+    annotate("text", x=Inf, y = Inf,
+             label = plot_label_2, color = "blue",
+             vjust=1, hjust = 1) + 
     theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
     ylim(0, max_y_intercept+0.25*max_y_intercept) +
-    ggtitle(label = paste(temp$case_id, " (n = ", num_mutations, ")", "; Est T.C. = ", temp$est_tumor_content, "%", sep = ""))
+    ggtitle(label = paste(temp$case_id, 
+                          " (", temp$tumor.tissue_type, ", ",
+                          round(temp$mean_target_coverage, 0), "X, ",
+                          "n = ", num_mutations, ")", 
+                          "; Est T.C. = ", temp$est_tumor_content, "%", 
+                          sep = ""))
 }
-#do.call("grid.arrange", c(AF.plots, ncol=1))
+
 grid.arrange(grobs = AF.plots, ncol=3, bottom = "Allele frequency (%)", left = "Density")
 
-#y = max(density(temp$allele_freq_tumor)$y),
 
-# plot all samples
-p <- ggplot(calls.all, aes(as.numeric(allele_freq_tumor), colour = tumor_id)) + 
-  geom_density() + 
-  xlab ("Allele frequency (%)") + 
-  ylab("Density")
+## AF distributions for tumors with a *MATCHED* normal
 
-# faceted plot (one distribution per sample)
-p + facet_grid(tumor_id ~ ., scales = "free")
+# sort case_id by est_tumor_content
+calls.matchedN <- calls.matchedN[order(calls.matchedN$est_tumor_content),]
+calls.matchedN$case_id <- factor(calls.matchedN$case_id)
 
-# or organize plots into 2 columns
-p + facet_wrap(~ tumor_id, ncol=2)
+# for each sample, create AF density plot with vertical at peak value
+AF.plots <- vector('list', length(unique(calls.matchedN$case_id)))
+for (i in seq_along(unique(calls.matchedN$case_id))) {
+  temp <- subset(calls.matchedN, calls.matchedN$case_id == unique(calls.matchedN$case_id)[i])
+  
+  num_mutations <- nrow(temp)
+  
+  # identify peak value for current sample
+  max_y_density <- which.max(density(temp$allele_freq_tumor)$y)
+  max_x_intercept <- density(temp$allele_freq_tumor)$x[max_y_density]
+  max_y_intercept <- density(temp$allele_freq_tumor)$y[max_y_density]
+  
+  print(max_y_intercept)
+  
+  plot_label <- c(paste0("Peak AF: ", round(max_x_intercept, digits = 2), "% --", sep = ""))
+  plot_label_2 <- c(paste0("\nEst. heterozygous VAF --"))
+
+  AF.plots[[i]] <- ggplot(temp, aes(as.numeric(allele_freq_tumor))) + 
+    geom_density() +
+    geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
+    geom_vline(xintercept = as.numeric(temp$est_tumor_content / 2), col="blue", lty=2) +
+    geom_vline(xintercept = 50, size = 20, alpha = 0.4, col="grey") +
+    xlab("Allele frequency (%)") + ylab("Density") +
+    annotate("text", x=Inf, y = Inf,
+             label = plot_label, color = "red",
+             vjust=1, hjust = 1) + 
+    annotate("text", x=Inf, y = Inf,
+             label = plot_label_2, color = "blue",
+             vjust=1, hjust = 1) + 
+    theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
+    ylim(0, max_y_intercept+0.25*max_y_intercept) +
+    ggtitle(label = paste(temp$case_id, 
+                          " (", temp$tumor.tissue_type, ", ",
+                          round(temp$mean_target_coverage, 0), "X, ",
+                          "n = ", num_mutations, ")", 
+                          "; Est T.C. = ", temp$est_tumor_content, "%", 
+                          sep = ""))
+}
+grid.arrange(grobs = AF.plots, ncol=3, bottom = "Allele frequency (%)", left = "Density")
 
 ```
 
@@ -104,29 +162,29 @@ data.df <- as.data.frame(table(calls.all$case_id, calls.all$class))
 colnames(data.df) <- c("case", "variant_class", "count")
 
 # sort by total number of mutations
-p <- ggplot(data = data.df, aes(x = case, y = count, fill = variant_class)) + 
+p <- ggplot(data = data.df, aes(x = reorder(case, -count), y = count, fill = variant_class)) + 
   geom_bar(stat = "identity", width = 0.6) + 
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
   scale_fill_discrete(name = "Variant Class") +
-  xlab("") + ylab("Number of mutations")
-
+  xlab("") + ylab("Number of mutations") 
 ```
 
 
-## Preliminary analysis
+## Plot mutation frequencies for gene panel
 
 ```{r}
 library(ggplot2)
 
-# remove genes that are not mutated
-calls.overlap$gene <- factor(calls.overlap$gene)
+# get gene panel
+genes.panel <- read.table("/Volumes/shung/projects/gzl_exomes/data/target_panel_Agilent_genes.txt", header=FALSE)
+genes.panel <- as.vector(genes.panel$V1)
 
 # sort by decreasing number of mutations per gene
-calls.overlap <- within(calls.overlap, gene <- factor(gene, levels=names(sort(table(gene), decreasing=FALSE))))
+calls.all <- within(calls.all, gene <- factor(gene, levels=names(sort(table(gene), decreasing=FALSE))))
 
 # plot
-g <- ggplot(calls.overlap, aes(gene))
-g + geom_bar(aes(fill = tumor_id), position = position_stack(reverse = TRUE)) +
+g <- ggplot(calls.all, aes(gene))
+g + geom_bar(aes(), position = position_stack(reverse = TRUE)) +
   coord_flip() +
   theme(legend.position = "bottom")
 
