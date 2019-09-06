@@ -12,43 +12,21 @@ This script performs the following tasks:
 For details on filters used in Varscan, please consult http://varscan.sourceforge.net/somatic-calling.html	
 	
 For effect and codon annotation, SnpEff-4.0 is used, while for HGVS annotation (cds and protein), SnpEff-4.2 is used.	
-	
-How to run this script:	
- 	
-Rscript GPH-varscan+strelka_to_masterlist.R <1> <2> <3> <4> <5> <6>
- 	
-where 	
-	
-<1> is the absolute file path of the varscan snp table annotated with SnpEff-4.0	
-<2> is the absolute file path of the varscan indel table annotated with SnpEff-4.0	
-<3> is the absolute file path of the varscan snp table annotated with SnpEff-4.2	
-<4> is the absolute file path of the varscan indel table annotated with SnpEff-4.2	
-<5> is the absolute file path of the strelka passed.snvs
-<6> is the absolute file path of the output results directory
-	
  	
 ## Load libraries
  	
 ```{r}
-#install.packages("plyr", repos='http://cran.rstudio.com/')
-#install.packages("dplyr", repos='http://cran.rstudio.com/')
-#install.packages("tidyr", repos='http://cran.rstudio.com/')
-#install.packages("DataCombine", repos='http://cran.rstudio.com/')
-
 library(plyr)
 library(dplyr)    # filter	
 library(tidyr)    # separate	
-library(DataCombine) # find and replace	
+library(DataCombine) # find and replace
+library(reshape2) # colsplit
 ```
 
 ## Load and filter varScan dataset	
 
 ```{r}
-#args <- commandArgs(trailingOnly = TRUE)	
-	
 # use SnpEff-4.0 for effect annotation	
-#varscan_snvs.snpEff_4.0 <- args[1]	
-#varscan_indels.snpEff_4.0 <- args[2]	
 varscan_snvs.snpEff_4.0 <- "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/varScan-snpEff-4.0/all.paired_samples.varScan.snps.snpEff.snps_annotated.cosmic_annotated.txt"
 varscan_indels.snpEff_4.0 <- "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/varScan-snpEff-4.0/all.paired_samples.varScan.indels.snpEff_canonical.indels_annotated.txt"
 
@@ -61,8 +39,6 @@ varscan.indels$type = "indel"
 varscan.calls <- rbind(varscan.snvs, varscan.indels)	
 	
 # use SnpEff-4.2 for HGVS annotation	
-#varscan_snvs.snpEff_4.2 <- args[3]	
-#varscan_indels.snpEff_4.2 <- args[4]	
 varscan_snvs.snpEff_4.2 <- "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/varScan-snpEff-4.2/all.paired_samples.varScan.snps.snpEff.snps_annotated.cosmic_annotated.txt"
 varscan_indels.snpEff_4.2 <- "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/varScan-snpEff-4.2/all.paired_samples.varScan.indels.snpEff_canonical.indels_annotated.txt"
 
@@ -143,9 +119,68 @@ varscan.calls.hgvs <- FindReplace(data = varscan.calls.hgvs,
 varscan.calls.hgvs$HGVS_protein_snpEff_4.2 <- sapply(varscan.calls.hgvs$HGVS_protein_snpEff_4.2, as.character)
 varscan.calls.hgvs$HGVS_protein_snpEff_4.2[is.na(varscan.calls.hgvs$HGVS_protein_snpEff_4.2)] <- " "
 
-# filter varscan calls for somatic calls (SS = 2, GMAF < 0.001 [if available]) and have a PASS filter	
-varscan.calls <- filter(varscan.calls, somatic_status == 2 & filter == 'PASS' & (gmaf < 0.01 | is.na(gmaf)) & somatic_p_value < 0.05)	
-varscan.calls.hgvs <- filter(varscan.calls.hgvs, somatic_status == 2 & filter == 'PASS' & (gmaf < 0.01 | is.na(gmaf)))	
+# read in data that contains information on tumor content and tissue type of the normal
+sample.data <- read.table("/Volumes/shung/projects/gzl_targeted/data/gzl_targeted-T_N-samples.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+# extract only required columns
+sample.data <- sample.data[, c("tumor.target_ID", "tumor_content", "normal.extraction_method")]
+colnames(sample.data) <- c("tumor_id", "tumor_content", "normal.extraction_method")
+
+# merge T-N data with SNVs
+varscan.calls <- merge(varscan.calls, sample.data, by = "tumor_id")
+
+# define thresholds for all samples EXCEPT for tumors paired to LMD normals
+MAX_GMAF = 0.01        
+MAX_SOMATIC_PVAL = 0.05
+MIN_VAR_READS_TUMOR = 5
+
+# apply OPTIMIZED thresholds to tumor vs. LMD normals samples
+MAX_SOMATIC_PVAL.LMD_OPT = 0.1375   # OPTIMIZED
+MAX_VAR_AF_NORMAL.LMD_OPT = 10      # OPTIMIZED; as a percentage
+
+# germline filters where tumor content is <20% (temporary) --> remove variants with VAF between 45-55% or >90%
+GERMLINE_AF_HETERO_LOW = 45   # lower bound for heterozygous germline variant
+GERMLINE_AF_HETERO_HIGH = 55  # upper bound for heterozygous germline variant
+GERMLINE_AF_HOMO_LOW = 90      # lower bound for homozygous germline variant
+
+# apply filters that can be applied to ALL samples
+varscan.calls <- filter(varscan.calls, somatic_status == 2 & 
+                          filter == 'PASS' & 
+                          (as.numeric(gmaf) < MAX_GMAF | is.na(gmaf)) &
+                          as.numeric(var_reads_tumor) >= MIN_VAR_READS_TUMOR)
+
+# apply different filters depending on the type of normal (LMD vs. not LMD)
+varscan.calls <- filter(varscan.calls, 
+                           ((as.numeric(somatic_p_value) < MAX_SOMATIC_PVAL.LMD_OPT) & 
+                              (normal.extraction_method == "LMD") & 
+                              (as.numeric(allele_freq_normal) < MAX_VAR_AF_NORMAL.LMD_OPT)) | 
+                             ((as.numeric(somatic_p_value) < MAX_SOMATIC_PVAL) &
+                                               (normal.extraction_method != "LMD")) 
+                           )
+
+# apply different filters depending on tumor content: <= 20% or >20%
+varscan.calls <- filter(varscan.calls, (as.numeric(tumor_content) <= 20 & 
+                        ((as.numeric(allele_freq_tumor) < GERMLINE_AF_HETERO_LOW) | (as.numeric(allele_freq_tumor) > GERMLINE_AF_HETERO_HIGH & as.numeric(allele_freq_tumor) < GERMLINE_AF_HOMO_LOW))) | 
+                   (as.numeric(tumor_content) > 20)
+                 )
+    
+varscan.calls.hgvs <- filter(varscan.calls.hgvs, somatic_status == 2 & 
+                               filter == 'PASS' & 
+                               (as.numeric(gmaf) < MAX_GMAF | is.na(gmaf))
+                               )	
+
+# strand bias filter (temporary; to be implemented as part of VarScan pipeline for next batch)
+varscan.calls <-	
+  separate(data = varscan.calls,	
+           col = depth4_tumor,	
+           into = c("tumor.ref_reads.forward", "tumor.ref_reads.reverse",
+                  "tumor.var_reads.forward", "tumor.var_reads.reverse"),	
+           sep = ",",	
+           remove = FALSE)	
+
+varscan.calls <- filter(varscan.calls, 
+                        !(as.numeric(tumor.var_reads.forward) > as.numeric(0.9*as.numeric(var_reads_tumor))) & 
+                          !(as.numeric(tumor.var_reads.reverse) > as.numeric(0.9*as.numeric(var_reads_tumor))))
 
 # remove duplicates (e.g. due to multiple effects) in the HGVS dataset	
 varscan.calls.hgvs <- unique(varscan.calls.hgvs)	
@@ -165,9 +200,7 @@ varscan.calls <- unique(rbind(
                 varscan.calls[grep("STOP_GAINED", varscan.calls$effect), ],	
                 varscan.calls[grep("STOP_LOST", varscan.calls$effect), ]
                 ))	
-#                varscan.calls[grep("UTR_3_PRIME", varscan.calls$effect), ],
-#                varscan.calls[grep("UTR_5_PRIME", varscan.calls$effect), ]
-	
+
 varscan.calls.hgvs <- unique(rbind(	
                 varscan.calls.hgvs[grep("FRAME_SHIFT", varscan.calls.hgvs$effect), ],	
                 varscan.calls.hgvs[grep("SPLICE_SITE_ACCEPTOR", varscan.calls.hgvs$effect), ],	
@@ -183,16 +216,16 @@ varscan.calls.hgvs <- unique(rbind(
                 varscan.calls.hgvs[grep("STOP_LOST", varscan.calls.hgvs$effect), ]
                 ))	
 
-#                varscan.calls.hgvs[grep("UTR_3_PRIME", varscan.calls.hgvs$effect), ],	
-#                varscan.calls.hgvs[grep("UTR_5_PRIME", varscan.calls.hgvs$effect), ]	
-
 # additional filters
+
 # 1. Remove mutations with both 1000 genomes ids and rs id
 varscan.calls <- unique(rbind(varscan.calls[!grepl("1000G", varscan.calls$external_id), ]))
+
 # 2. Remove non-panel genes
 genes.panel <- read.table("/Volumes/shung/projects/gzl_exomes/data/target_panel_Agilent_genes.txt", header=FALSE)
 genes.panel <- as.vector(genes.panel$V1)
 varscan.calls <- filter(varscan.calls, varscan.calls$gene %in% genes.panel)
+
 # 3. *NEW* Remove variants with a *pooled normal* that only have a dbSNP id
 # Two step process: (i) retrieve all variants with both an dbSNP id (rs*) and COSMIC id (COSM*)
 #                   (ii) remove all variants with an dbSNP id and combine with list from (i)
@@ -257,7 +290,7 @@ varscan.calls.hgvs.merge <- addNewData("newData.csv", varscan.calls, allowedVars
 ## Load strelka dataset and intersect with filtered VarScan	
  	
 ```{r}	
-#strelka_file <- args[5]	
+
 strelka_snvs_file <- "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/strelka/passed.snvs.txt"
 strelka_indels_file <- "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/strelka/passed.indels.txt"
 	
@@ -316,13 +349,12 @@ keeps <- c("tumor_id", "normal_id", "chr", "pos", "gene", "type", "ref", "alt", 
 calls.overlap <- calls.overlap[keeps]
 
 # sort the calls by case, chr, then position	
-calls.overlap <- arrange(calls.overlap, tumor_id, chr, pos)	
-	
-#output_dir <- args[6]	
+calls.overlap <- arrange(calls.overlap, tumor_id, chr, pos)
 
 # temporary
 calls.overlap <- unique(calls.overlap)
-write.table(calls.overlap, "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/calls.integration/calls-varscan_intersect_strelka_v2.txt", sep = "\t", quote = FALSE, row.names = FALSE)	
+
+write.table(calls.overlap, "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/calls.integration/calls-varscan_intersect_strelka.txt", sep = "\t", quote = FALSE, row.names = FALSE)	
 
 ```
 
@@ -357,7 +389,7 @@ gene.num_cases_mutated$proportion <- gene.num_cases_mutated$Freq / NUM_CASES * 1
 colnames(gene.num_cases_mutated) <- c("gene", "freq", "proportion")
 
 # write out to file for future referencing
-write.table(gene.num_cases_mutated, "/Volumes/shung/projects/gzl_targeted/pilot/gene_mutation_frequencies-panel.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(gene.num_cases_mutated, "/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/gene_mutation_frequencies-panel.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 
 # reorder genes by increasing frequency in PMBCL dataset
 gene.num_cases_mutated$gene <- factor(gene.num_cases_mutated$gene, 
