@@ -14,22 +14,52 @@ This script performs the following tasks:
 ## Load libraries
  	
 ```{r}
-library(dplyr)    # filter	
+library(dplyr)    # filter and rename
 library(tidyr)    # separate	
 ```
 
-## Load master list of SNVs/indels
+## Create master list of SNVs/indels and add additional filters as needed
 
 ```{r}
-calls.all <- read.table("/Volumes/shung/projects/gzl_targeted/gzl_targeted-master-snvs_indels.txt", sep = "\t", header = TRUE, fill = TRUE)
+calls.pilot <- read.table("/Volumes/shung/projects/gzl_targeted/pilot/calls.integration/calls-varscan_intersect_strelka-canonical.txt", sep = "\t", header = TRUE, fill = TRUE, stringsAsFactors = FALSE)
+
+# remove "key" column
+calls.pilot$key <- NULL
+
+# create "plate" column (pilot, batch1, batch2, etc.)
+calls.pilot$plate <- "pilot"
+
+# merge with samples data to add columns for tumor content and normal method of extraction
+
+# read in data that contains information on tumor content and tissue type of the normal
+sample.data <- read.table("/Volumes/shung/projects/gzl_targeted/data/gzl_targeted-T_N-samples.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+# extract only required columns
+sample.data <- sample.data[, c("tumor.target_ID", "tumor.tumor_id", "tumor.tissue_type", "tumor_content", "tumor.mean_target_coverage", "normal.extraction_method")]
+colnames(sample.data) <- c("case_id", "tumor_id", "tumor.tissue_type", "tumor_content", "tumor.mean_target_coverage", "normal.extraction_method")
+
+# merge T-N data with SNVs
+calls.pilot <- merge(calls.pilot, sample.data, by = "tumor_id")
+
+# remove the original "tumor_id" column (has long version of sample names) and rename "case id" to "tumor_id"
+calls.pilot$tumor_id <- NULL
+names(calls.pilot)[names(calls.pilot) == "case_id"] <- "tumor_id"
+
+calls.batch1 <- read.table("/Volumes/shung/projects/gzl_targeted/targeted_batch1_20190812/calls.integration/calls-varscan_intersect_strelka.txt", sep = "\t", header = TRUE, fill = TRUE, stringsAsFactors = FALSE)
+
+calls.batch1$plate <- "1"
+
+# merge batches together
+calls.pilot <- calls.pilot[colnames(calls.batch1)]
+calls.all <- rbind(calls.pilot, calls.batch1)
 
 # calls corresponding to pooled normals
 calls.pooledN <- filter(calls.all, (calls.all$normal_id == "pooledN" | calls.all$normal_id == "BM1803125"))
 
 # calls for matched tumor-normal pairs 
 calls.matchedN <- filter(calls.all, calls.all$normal_id != "pooledN" & calls.all$normal_id != "BM1803125")
-
 ```
+
 
 ## Plot distribution of allele frequencies by tumor sample and include estimated tumor content
 
@@ -41,13 +71,13 @@ library(ggplot2)
 ## AF distributions for tumors matched to a *POOLED* normal
 
 # sort case_id by est_tumor_content
-calls.pooledN <- calls.pooledN[order(calls.pooledN$est_tumor_content),]
-calls.pooledN$case_id <- factor(calls.pooledN$case_id)
+calls.pooledN <- calls.pooledN[order(calls.pooledN$tumor_content),]
+calls.pooledN$tumor_id <- factor(calls.pooledN$tumor_id)
 
 # for each sample, create AF density plot with vertical at peak value
-AF.plots <- vector('list', length(unique(calls.pooledN$case_id)))
-for (i in seq_along(unique(calls.pooledN$case_id))) {
-  temp <- subset(calls.pooledN, calls.pooledN$case_id == unique(calls.pooledN$case_id)[i])
+AF.plots <- vector('list', length(unique(calls.pooledN$tumor_id)))
+for (i in seq_along(unique(calls.pooledN$tumor_id))) {
+  temp <- subset(calls.pooledN, calls.pooledN$tumor_id == unique(calls.pooledN$tumor_id)[i])
   
   num_mutations <- nrow(temp)
   
@@ -63,9 +93,12 @@ for (i in seq_along(unique(calls.pooledN$case_id))) {
   #plot_label_3 <- c(paste0("\n\nEst. germline VAF (T.C.) --"))
   
   AF.plots[[i]] <- ggplot(temp, aes(as.numeric(allele_freq_tumor))) + 
-    geom_density() +
+    geom_histogram(aes(y=..density..),      # Histogram with density instead of count on y-axis #binwidth=.5,
+                   binwidth=0.5,
+                   colour="black", fill="white") +
+    geom_density(alpha = 0.2, fill="#FF6666") +
     geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
-    geom_vline(xintercept = as.numeric(temp$est_tumor_content / 2), col="blue", lty=2) +
+    geom_vline(xintercept = as.numeric(temp$tumor_content / 2), col="blue", lty=2) +
     geom_vline(xintercept = 50, size = 20, alpha = 0.4, col="grey") +
     xlab("Allele frequency (%)") + ylab("Density") +
     annotate("text", x=Inf, y = Inf,
@@ -76,11 +109,11 @@ for (i in seq_along(unique(calls.pooledN$case_id))) {
              vjust=1, hjust = 1) + 
     theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
     ylim(0, max_y_intercept+0.25*max_y_intercept) +
-    ggtitle(label = paste(temp$case_id, 
+    ggtitle(label = paste(temp$tumor_id, 
                           " (", temp$tumor.tissue_type, ", ",
-                          round(temp$mean_target_coverage, 0), "X, ",
+                          round(as.numeric(temp$tumor.mean_target_coverage), 0), "X, ",
                           "n = ", num_mutations, ")", 
-                          "; Est T.C. = ", temp$est_tumor_content, "%", 
+                          "; Est T.C. = ", temp$tumor_content, "%", 
                           sep = ""))
 }
 
