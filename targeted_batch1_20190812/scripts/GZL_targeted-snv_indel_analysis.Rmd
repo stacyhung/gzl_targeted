@@ -89,35 +89,36 @@ for (i in seq_along(unique(calls.pooledN$tumor_id))) {
   print(max_y_intercept)
   
   plot_label <- c(paste0("Peak AF: ", round(max_x_intercept, digits = 2), "% --", sep = ""))
-  plot_label_2 <- c(paste0("\nEst. heterozygous VAF --"))
+  plot_label_2 <- c(paste0("\nEst. hetero. VAF --"))
   #plot_label_3 <- c(paste0("\n\nEst. germline VAF (T.C.) --"))
   
   AF.plots[[i]] <- ggplot(temp, aes(as.numeric(allele_freq_tumor))) + 
-    geom_histogram(aes(y=..density..),      # Histogram with density instead of count on y-axis #binwidth=.5,
-                   binwidth=0.5,
-                   colour="black", fill="white") +
     geom_density(alpha = 0.2, fill="#FF6666") +
     geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
     geom_vline(xintercept = as.numeric(temp$tumor_content / 2), col="blue", lty=2) +
     geom_vline(xintercept = 50, size = 20, alpha = 0.4, col="grey") +
     xlab("Allele frequency (%)") + ylab("Density") +
+    theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
+    ylim(0, max_y_intercept+0.25*max_y_intercept) +
+    ggtitle(label = paste(temp$tumor_id, 
+                          " (", temp$tumor.tissue_type, ", ",
+                          round(as.numeric(factor(temp$tumor.mean_target_coverage[i])), 0), "X, ",
+                          "n = ", num_mutations, ")", 
+                          "; Est T.C. = ", unique(temp$tumor_content), "%", 
+                          sep = "")) +
     annotate("text", x=Inf, y = Inf,
              label = plot_label, color = "red",
              vjust=1, hjust = 1) + 
     annotate("text", x=Inf, y = Inf,
              label = plot_label_2, color = "blue",
-             vjust=1, hjust = 1) + 
-    theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
-    ylim(0, max_y_intercept+0.25*max_y_intercept) +
-    ggtitle(label = paste(temp$tumor_id, 
-                          " (", temp$tumor.tissue_type, ", ",
-                          round(as.numeric(unfactor(temp$tumor.mean_target_coverage[i])), 0), "X, ",
-                          "n = ", num_mutations, ")", 
-                          "; Est T.C. = ", unique(temp$tumor_content), "%", 
-                          sep = ""))
+             vjust=1, hjust = 1)
 }
+#    geom_histogram(aes(y=..density..),      # Histogram with density instead of count on y-axis #binwidth=.5,
+#                   binwidth=0.5,
+#                   colour="black", fill="white") +
 
-grid.arrange(grobs = AF.plots, ncol=3, bottom = "Allele frequency (%)", left = "Density")
+# landscape format (6 rows by 5 columns - printed at 20X11 pdf)
+grid.arrange(grobs = AF.plots, ncol=5, bottom = "Allele frequency (%)", left = "Density")
 
 
 ## AF distributions for tumors with a *MATCHED* normal
@@ -146,13 +147,10 @@ for (i in seq_along(unique(calls.matchedN$tumor_id))) {
   print(max_y_intercept)
   
   plot_label <- c(paste0("Peak AF: ", round(max_x_intercept, digits = 2), "% --", sep = ""))
-  plot_label_2 <- c(paste0("\nEst. heterozygous VAF --"))
+  plot_label_2 <- c(paste0("\nEst. hetero. VAF --"))
   #plot_label_3 <- c(paste0("\n\nEst. germline VAF (T.C.) --"))
   
   AF.plots[[i]] <- ggplot(temp, aes(as.numeric(allele_freq_tumor))) + 
-    geom_histogram(aes(y=..density..),      # Histogram with density instead of count on y-axis #binwidth=.5,
-                   binwidth=0.5,
-                   colour="black", fill="white") +
     geom_density(alpha = 0.2, fill="#FF6666") +
     geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
     geom_vline(xintercept = as.numeric(temp$tumor_content / 2), col="blue", lty=2) +
@@ -168,13 +166,17 @@ for (i in seq_along(unique(calls.matchedN$tumor_id))) {
     ylim(0, max_y_intercept+0.25*max_y_intercept) +
     ggtitle(label = paste(temp$tumor_id, 
                           " (", temp$tumor.tissue_type, ", ",
-                          round(as.numeric(unfactor(temp$tumor.mean_target_coverage[i])), 0), "X, ",
+                          round(as.numeric(factor(temp$tumor.mean_target_coverage[i])), 0), "X, ",
                           "n = ", num_mutations, ")", 
                           "; Est T.C. = ", unique(temp$tumor_content), "%", 
                           sep = ""))
 }
+#    geom_histogram(aes(y=..density..),      # Histogram with density instead of count on y-axis #binwidth=.5,
+#                   binwidth=0.5,
+#                   colour="black", fill="white") +
 
-grid.arrange(grobs = AF.plots, ncol=3, bottom = "Allele frequency (%)", left = "Density")
+# 16.5 X 9 pdf
+grid.arrange(grobs = AF.plots, ncol=4, bottom = "Allele frequency (%)", left = "Density")
 
 ```
 
