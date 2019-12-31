@@ -232,8 +232,8 @@ mutect.snvs$type = "snv"
 
 # rename columns
 colnames(mutect.snvs) <- c("sample", "chr", "pos", "external_id", "ref", 
-          "alt", "filter", "normal.gt", "normal.var_depth", "normal.base_qual", 
-          "normal.depth", "normal.allele_freq", "normal.somatic_status", "tumor.gt", "tumor.var_depth", 
+          "alt", "filter", "normal.gt", "normal.var_reads", "normal.base_qual", 
+          "normal.depth", "normal.allele_freq", "normal.somatic_status", "tumor.gt", "tumor.var_reads", 
           "tumor.base_qual", "tumor.depth", "tumor.allele_freq", "somatic_status", "somatic", "VT", "allele", 
           "effect", "impact", "gene", "feature", "biotype", "exon_rank", "hgvs_cdna", "hgvs_protein", 
           "cds_pos", "cds_len", "AA_pos", "AA_len", "type")
@@ -260,8 +260,8 @@ mutect.snvs <- filter(mutect.snvs, mutect.snvs$tumor.base_qual >= 20)
 
 # remove non-informtive / redundant columns
 keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein",
-           "normal.depth", "normal.var_depth", "normal.allele_freq",
-           "tumor.depth", "tumor.var_depth", "tumor.allele_freq", 
+           "normal.depth", "normal.var_reads", "normal.allele_freq",
+           "tumor.depth", "tumor.var_reads", "tumor.allele_freq", 
            "effect", "impact", "biotype", "external_id")
 mutect.snvs <- mutect.snvs[, keeps]
 
@@ -287,10 +287,17 @@ mutect.snvs <- merge(mutect.snvs, sample.data, by = "tumor.id", all.x = TRUE)
 # extract tumor variant reads
 mutect.snvs <-	
   separate(data = mutect.snvs,	
-           col = tumor.var_depth,	
+           col = tumor.var_reads,	
            into = c("tumor.ref_reads", "tumor.var_reads"),	
            sep = ",",	convert = TRUE,
            remove = FALSE)	
+mutect.snvs <-	
+  separate(data = mutect.snvs,	
+           col = normal.var_reads,	
+           into = c("normal.ref_reads", "normal.var_reads"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)	
+
 
 # apply filters that can be applied to ALL samples
 mutect.snvs <- filter(mutect.snvs, as.numeric(tumor.var_reads) >= MIN_VAR_READS_TUMOR)
@@ -536,7 +543,7 @@ colnames(strelka.calls) <- c("tumor.id", "normal.id", "type", "chr", "pos", "gen
 # rename specific tumor ids so that sample information can be properly mapped
 tumor_id.to.mappable_tumor_id <- c("BCC20-FFT"="BCC20",
                            "GZ-170-merged.sorted"="GZ-170")
-strelka.calls$tumor_id <- revalue(strelka.calls$tumor_id, tumor_id.to.mappable_tumor_id)
+strelka.calls$tumor.id <- revalue(strelka.calls$tumor.id, tumor_id.to.mappable_tumor_id)
 
 # remove excluded samples
 strelka.calls <- filter(strelka.calls, !(strelka.calls$tumor.id %in% samples.to.exclude))
@@ -638,97 +645,67 @@ calls.mutect_and_strelka_only <- intersect(unique(mutect.snvs$ combine), unique(
 #calls.mutect_only
 
 # now label the "union" table
-union.keeps <- c("tumor_id", "normal_id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein", "combine")
+union.keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein", "combine")
 varscan.union <- varScan.calls[, union.keeps]
 mutect.union <- mutect.snvs[, union.keeps]
-varscan.mutect.union <- unique(rbind(varscan.union, mutect.union))
-varscan.mutect.union.full <- unique(rbind(varscan.union, mutect.union))
+strelka.union <- strelka.calls[, union.keeps]
+calls.union <- unique(rbind(varscan.union, mutect.union, strelka.union))
 
-# unique datasets
-varscan.mutect.union <- varscan.mutect.union %>%
-  select(combine) %>%
-  mutate(datasets = ifelse(combine %in% varScan.calls$combine, "varscan", "mutect"))
+# label by which datasets combine is present in
 
-# overlapping datasets
-varscan.mutect.union <- varscan.mutect.union %>%
-  select(combine, datasets) %>%
+# check if key is present in the individual datasets
+calls.union <- calls.union %>% mutate(datasets = ifelse(combine %in% varScan.calls$combine, "varscan", 
+                           ifelse(combine %in% strelka.calls$combine, "strelka", "mutect")))
+         
+# add more granular labelling
+calls.union <- calls.union %>% 
   mutate(datasets = ifelse(combine %in% calls.varscan_and_mutect_only, "varscan, mutect", datasets))
-
-varscan.mutect.union <- varscan.mutect.union %>%
-  select(combine, datasets) %>%
+calls.union <- calls.union %>% 
   mutate(datasets = ifelse(combine %in% calls.varscan_and_strelka_only, "varscan, strelka", datasets))
-
-varscan.mutect.union <- varscan.mutect.union %>%
-  select(combine, datasets) %>%
+calls.union <- calls.union %>% 
   mutate(datasets = ifelse(combine %in% calls.mutect_and_strelka_only, "mutect, strelka", datasets))
-
-varscan.mutect.union <- varscan.mutect.union %>%
-  select(combine, datasets) %>%
+calls.union <- calls.union %>% 
   mutate(datasets = ifelse(combine %in% calls.varscan_and_mutect_and_strelka, "varscan, mutect, strelka", datasets))
+calls.union <- unique(calls.union)
 
-varscan.mutect.union <- unique(varscan.mutect.union)
-
-# combine dataset information with full list of variants
-calls.all <- merge(varscan.mutect.union.full, varscan.mutect.union, by = "combine")
+to.merge <- c("normal.depth", "normal.var_reads", "normal.allele_freq", 
+              "tumor.depth", "tumor.var_reads", "tumor.allele_freq",
+              "effect", "impact", "biotype", "external_id", "combine")
 
 # add other fields depending on which tool
-varscan.to.merge <- c("allele_freq_normal", "allele_freq_tumor", "var_reads_normal", "var_reads_tumor", "effect", "impact", "biotype", "external_id", "combine")
-varscan.calls.to.merge <- varScan.calls[, varscan.to.merge]
+varscan.calls.to.merge <- varScan.calls[, to.merge]
+strelka.calls.to.merge <- strelka.calls[, to.merge]
+mutect.calls.to.merge <- mutect.snvs[, to.merge]
 
-# for mutect calls, extract variant reads for normal and tumor 
-mutect.snvs <-	
-  separate(data = mutect.snvs,	
-           col = normal.var_depth,	
-           into = c("ref_reads_normal", "var_reads_normal"),	
-           sep = ",",	
-           remove = TRUE,	
-           fill = "left")	
-mutect.snvs <-	
-  separate(data = mutect.snvs,	
-           col = tumor.var_depth,	
-           into = c("ref_reads_tumor", "var_reads_tumor"),	
-           sep = ",",	
-           remove = TRUE,	
-           fill = "left")	
-# also convert allele frequency to decimal (not fraction)
-mutect.snvs$allele_freq_normal <- mutect.snvs$allele_freq_normal*100
-mutect.snvs$allele_freq_tumor <- mutect.snvs$allele_freq_tumor*100
-mutect.to.merge <- c("allele_freq_normal", "allele_freq_tumor", "var_reads_normal", "var_reads_tumor", "effect", "impact", "biotype", "external_id", "combine")
-mutect.calls.to.merge <- mutect.snvs[, mutect.to.merge]
+# now arbitrarily split up the calls into varscan-, mutect- and strelka- (in that order) annotatable:
+varscan.datasets <- c("varscan", 
+                      "varscan, strelka", 
+                      "varscan, mutect", 
+                      "varscan, mutect, strelka")
+mutect.datasets <- c("mutect", 
+                     "mutect, strelka")
+strelka.datasets <- c("strelka")
 
-# now temporarily split up the calls into varscan- and mutect- annotatable:
-varscan.datasets <- c("varscan", "varscan, strelka", "varscan, mutect", "varscan, mutect, strelka")
-mutect.datasets <- c("mutect", "mutect, strelka")
-calls.all.varscan.temp <- filter(calls.all, calls.all$datasets %in% varscan.datasets)
-calls.all.mutect.temp <- filter(calls.all, calls.all$datasets %in% mutect.datasets)
+calls.union.varscan.temp <- filter(calls.union, calls.union$datasets %in% varscan.datasets)
+calls.union.mutect.temp <- filter(calls.union, calls.union$datasets %in% mutect.datasets)
+calls.union.strelka.temp <- filter(calls.union, calls.union$datasets %in% strelka.datasets)
 
 # now add annotation to individual datasets and combine again
-calls.all.varscan <- merge(calls.all.varscan.temp, varscan.calls.to.merge, by = "combine")
-calls.all.mutect <- merge(calls.all.mutect.temp, mutect.calls.to.merge, by = "combine")
+calls.all.varscan <- merge(calls.union.varscan.temp, varscan.calls.to.merge, by = "combine")
+calls.all.mutect <- merge(calls.union.mutect.temp, mutect.calls.to.merge, by = "combine")
+calls.all.strelka <- merge(calls.union.strelka.temp, strelka.calls.to.merge, by = "combine")
 
-calls.all <- rbind(calls.all.varscan, calls.all.mutect)
+calls.all <- rbind(calls.all.varscan, calls.all.mutect, calls.all.strelka)
 calls.all$combine <- NULL
 
-# read in data that contains information on tumor content and tissue type of the normal
-sample.data <- read.table("/Volumes/shung/projects/gzl_targeted/data/gzl_targeted-T_N-samples.txt", sep = "\t", header = TRUE, fill = TRUE)
-
-# extract only required columns
-sample.data <- sample.data[, c("tumor.target_ID", "tumor.tissue_type", "tumor_content", "tumor.mean_target_coverage", "normal.extraction_method")]
-colnames(sample.data) <- c("tumor_id", "tumor.tissue_type", "tumor_content", "tumor.mean_target_coverage", "normal.extraction_method")
-
-# merge T-N data with SNVs
-calls.all <- merge(calls.all, sample.data, by = "tumor_id", all.x = TRUE)
+# merge meta data with variant calls
+calls.all <- merge(calls.all, sample.data, by = "tumor.id", all.x = TRUE)
 
 # sort the calls by case, chr, then position	
-calls.all <- unique(arrange(calls.all.v2, tumor_id, chr, pos))
+calls.all <- unique(arrange(calls.all, tumor.id, chr, pos))
 
 # write out the calls for downstream interpretation
-write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/calls.integration/calls.all-varscan_unoion_mutect+strelka.txt", sep = "\t", row.names = FALSE, quote = FALSE)
-
-# write out all the varScan and mutect calls to get tool-specific information
-#write.table(varScan.calls, "/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/varscan/varScan.calls.filtered.txt", sep = "\t", quote = FALSE, row.names = FALSE)
-#write.table(mutect.snvs, "/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/mutect/mutect.snvs.filtered.txt", sep = "\t", quote = FALSE, row.names = FALSE)
-
+write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/calls.integration/calls.all-union-varscan_mutect_strelka.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ## Intersect all three tools (this appears to be TOO strict for the GZ target gene panel)
