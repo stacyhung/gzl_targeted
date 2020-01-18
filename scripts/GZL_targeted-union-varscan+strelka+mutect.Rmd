@@ -346,8 +346,11 @@ mutect.snvs <- filter(mutect.snvs, !(mutect.snvs$effect %in% effects.exclude)) #
 # for LMD samples, p-value filter is not applicable for mutect calls (no p-value is output)
 # this filter says: keep variants from tumors matched to LMD only if VAF in normal is < 10, otherwise keep variant (i.e. not LMD, or no extraction method)
 mutect.snvs <- filter(mutect.snvs, 
-                        (normal.extraction_method == "LMD" & as.numeric(normal.allele_freq) < MAX_VAR_AF_NORMAL.LMD_OPT)
-                         | (normal.extraction_method != "LMD" | is.na(normal.extraction_method)))
+                      (normal.extraction_method %in% normals.LMD & as.numeric(normal.allele_freq) < MAX_VAR_AF_NORMAL.LMD_OPT)
+                         | ((!(normal.extraction_method %in% normals.LMD) | is.na(normal.extraction_method)) & 
+                              (as.numeric(normal.allele_freq) < 0.05*as.numeric(tumor.allele_freq)) 
+                            ) 
+                      )
 
 # apply different filters depending on tumor content: <= 20% or >20%
 mutect.snvs <- filter(mutect.snvs, (as.numeric(tumor_content) <= 20 & 
@@ -367,8 +370,8 @@ mutect.snvs <- filter(mutect.snvs, (as.numeric(tumor_content) <= 20 &
 #   5) Remove list of variants from (3)
 #   6) Rbind variants from 1, 2 and 4
 
-mutect.not_pooledN <- filter(mutect.snvs, normal.id != "pooledN") # dataset 1
-mutect.pooledN <- filter(mutect.snvs, normal.id == "pooledN")
+mutect.not_pooledN <- filter(mutect.snvs, !(normal.extraction_method %in% normals.pooled)) # dataset 1
+mutect.pooledN <- filter(mutect.snvs, normal.extraction_method %in% normals.pooled)
 mutect.pooledN.no_rsid <- filter(mutect.pooledN, !grepl("rs", mutect.pooledN$external_id)) # dataset 2
 mutect.pooledN.rsid <- filter(mutect.pooledN, grepl("rs", mutect.pooledN$external_id)) # dataset 3
 mutect.pooledN.rs_and_COSM_id <- filter(mutect.pooledN.rsid, grepl("COSM", mutect.pooledN.rsid$external_id)) # dataset 4
@@ -620,8 +623,11 @@ strelka.calls <- merge(strelka.calls, sample.data, by = "tumor.id", all.x = TRUE
 # for LMD samples, p-value filter is not applicable for mutect calls (no p-value is output)
 # this filter says: keep variants from tumors matched to LMD only if VAF in normal is < 10, otherwise keep variant (i.e. not LMD, or no extraction method)
 strelka.calls <- filter(strelka.calls, 
-                        (normal.extraction_method == "LMD" & as.numeric(normal.allele_freq) < MAX_VAR_AF_NORMAL.LMD_OPT)
-                         | (normal.extraction_method != "LMD" | is.na(normal.extraction_method)))
+                      (normal.extraction_method %in% normals.LMD & as.numeric(normal.allele_freq) < MAX_VAR_AF_NORMAL.LMD_OPT)
+                         | ((!(normal.extraction_method %in% normals.LMD) | is.na(normal.extraction_method)) &
+                              (as.numeric(normal.allele_freq) < 0.05*as.numeric(tumor.allele_freq))
+                            )
+                        )
 
 # apply different filters depending on tumor content: <= 20% or >20%
 strelka.calls <- filter(strelka.calls, (as.numeric(tumor_content) <= 20 & 
@@ -638,9 +644,8 @@ strelka.calls <- filter(strelka.calls, (as.numeric(tumor_content) <= 20 &
 #   4) Store variants from (3) that have a COSM id
 #   5) Remove list of variants from (3)
 #   6) Rbind variants from 1, 2 and 4
-
-strelka.not_pooledN <- filter(strelka.calls, normal.id != "pooledN") # dataset 1
-strelka.pooledN <- filter(strelka.calls, normal.id == "pooledN")
+strelka.not_pooledN <- filter(strelka.calls, !(normal.extraction_method %in% normals.pooled)) # dataset 1
+strelka.pooledN <- filter(strelka.calls, normal.extraction_method %in% normals.pooled)
 strelka.pooledN.no_rsid <- filter(strelka.pooledN, !grepl("rs", strelka.pooledN$external_id)) # dataset 2
 strelka.pooledN.rsid <- filter(strelka.pooledN, grepl("rs", strelka.pooledN$external_id)) # dataset 3
 strelka.pooledN.rs_and_COSM_id <- filter(strelka.pooledN.rsid, grepl("COSM", strelka.pooledN.rsid$external_id)) # dataset 4
