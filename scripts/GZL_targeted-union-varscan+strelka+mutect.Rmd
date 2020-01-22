@@ -9,6 +9,10 @@ This script performs the following tasks:
 1. Filters varScan predictions
 2. Intersects varScan with Strelka and Mutect predictions (indels from VarScan and Strelka only)
 
+Important notes:
+- LOF is associated with 4 fields: (i) gene, (ii) gene id (usually ensembl), (iii) number of transcripts, and (iv) percentage of transcripts affected by this variant
+- When the Ensembl transcript ID is not included in the output, it is really hard to filter out weird effects that end up being duplicates for a variant (e.g. whenever a variant is annotated with sequence_feature, it is also annotated with a standard effect like missense or nonsense) - to filter out these effects, it is key to include the "FEATUREID" (aka transcript ID) - then by keeping variants with annotation only via the Ensembl transcript ID, we retain a standard list of effects 
+
 for "batch #2" samples of the GZL targeted sequencing cohort.  Note that 9 samples that were sequenced as part of this cohort, should be excluded, either due to poor DNA quality or they are composite samples ("sequential"):
  	
 ## Load libraries
@@ -39,6 +43,21 @@ colnames(sample.data) <- c("tumor.id", "tumor.tissue_type", "tumor_content", "tu
 sample.data.1 <- filter(sample.data, tumor.tissue_type == "FFPE_LMD" & as.numeric(tumor.mean_target_coverage) > 40)
 sample.data.2 <- filter(sample.data, tumor.tissue_type != "FFPE_LMD" & as.numeric(tumor.mean_target_coverage) > 100)
 sample.data <- rbind(sample.data.1, sample.data.2)
+
+# panel genes
+genes.panel <- read.table("/Volumes/shung/projects/gzl_exomes/data/target_panel_Agilent_genes.txt", header=FALSE)
+genes.panel <- as.vector(genes.panel$V1)
+
+# mappings for 3-letter amino acids to 1-letter amino acid codes	
+AA.replaces <- data.frame(from = c("Ala", "Arg", "Asn", "Asp", "Asx", "Cys", "Glu", "Gln", "Glx", "Gly", "His", 	
+                                   "Ile", "Leu", "Lys", "Met", "Phe", "Pro", "Ser", "Thr", "Trp", "Tyr", "Val"), 	
+                          to = c("A", "R", "N", "D", "B", "C", "E", "Q", "Z", "G", "H", 	
+                                 "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"))	
+
+# filter for protein coding biotypes
+biotype.keeps <- c("IG_C_gene", "IG_D_gene", "IG_gene", "IG_J_gene", "IGL_V_gene", "IG_M_gene", "IG_V_gene",
+                   "IG_Z_gene", "nonsense_mediated_decay", "nontranslating_CDS", "non_stop_decay",
+                   "polymorphic_pseudogene", "TR_C_gene", "TR_D_gene", "TR_J_gene", "protein_coding")
 
 # define thresholds for all samples EXCEPT for tumors paired to LMD normals
 MAX_SOMATIC_PVAL = 0.05
@@ -71,6 +90,21 @@ normals.LMD <- c("pooled_LMD_N", "LMD")
 ```{r}
 snvs <- read.table("/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/varscan/GZ-280_GZ-280ME_LOF_test/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.dbsnp_filtered.txt", sep = "\t", header = TRUE, fill = TRUE)
 
+colnames(snvs) <- c("sample", "chr", "pos", "external_id", "ref", "alt", 
+                             "filter", "gt_normal", "gq_normal", "normal.depth", "normal.ref_reads", "normal.var_reads",
+                             "normal.allele_freq", "normal.depth4", "tumor.gt", "tumor.gq", "tumor.depth", "tumor.ref_reads",
+                             "tumor.var_reads", "tumor.allele_freq", "tumor.depth4", "depth", "somatic", "somatic_status",
+                             "gpv", "LOF.temp", "somatic_p_value", "allele", "effect", "impact", "gene", "feature",
+                    "feature_ID", "biotype",
+                             "exon_rank", "hgvs_cdna", "hgvs_protein", "cds_pos", "cds_len", "AA_pos", "AA_len", "LOF_gene",
+                    "LOF_geneid", "LOF_num_Tr", "LOF_perc")
+
+# Important filter that hopefully will solve the "duplicates" issue:
+
+#snvs.bad <- unique(snvs[!grepl("ENST", snvs$feature_ID), ])
+snvs.good <- unique(snvs[grep("ENST", snvs$feature_ID), ])
+
+write.table(snvs, "/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/varscan/GZ-280_GZ-280ME_LOF_test/snvs.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 
 ```
 
@@ -78,16 +112,19 @@ snvs <- read.table("/Volumes/shung/projects/gzl_targeted/targeted_batch2_2019101
 
 ```{r}
 # read in pilot+batch1 calls
-batch1.varScan.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/pilot_and_batch1/varScan/numbers/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
-batch1.varScan.indels <- read.table("/Volumes/shung/projects/gzl_targeted/pilot_and_batch1/varScan/numbers/all_indels.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
+#batch1.varScan.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/pilot_and_batch1/varScan/numbers/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
+#batch1.varScan.indels <- read.table("/Volumes/shung/projects/gzl_targeted/pilot_and_batch1/varScan/numbers/all_indels.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
 
 # read in batch2 calls
-batch2.varScan.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/varscan/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
-batch2.varScan.indels <- read.table("/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/varscan/all_indels.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
+#batch2.varScan.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/varscan/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
+#batch2.varScan.indels <- read.table("/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/varscan/all_indels.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
 
 # create a combined snv and combined indel dataset
-varScan.snvs <- rbind(batch1.varScan.snvs, batch2.varScan.snvs)
-varScan.indels <- rbind(batch1.varScan.indels, batch2.varScan.indels)
+#varScan.snvs <- rbind(batch1.varScan.snvs, batch2.varScan.snvs)
+#varScan.indels <- rbind(batch1.varScan.indels, batch2.varScan.indels)
+
+varScan.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/all_samples/varscan/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
+varScan.indels <- read.table("/Volumes/shung/projects/gzl_targeted/all_samples/varscan/all_indels.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
 
 # specify type of mutation
 varScan.indels$type <- "indel"
@@ -95,10 +132,6 @@ varScan.snvs$type <- "snv"
 
 # combine snvs and indels
 varScan.calls <- rbind(varScan.indels, varScan.snvs)
-rm(batch1.varScan.indels)
-rm(batch1.varScan.snvs)
-rm(batch2.varScan.indels)
-rm(batch2.varScan.snvs)
 rm(varScan.indels)
 rm(varScan.snvs)
 
@@ -107,8 +140,9 @@ colnames(varScan.calls) <- c("sample", "chr", "pos", "external_id", "ref", "alt"
                              "filter", "gt_normal", "gq_normal", "normal.depth", "normal.ref_reads", "normal.var_reads",
                              "normal.allele_freq", "normal.depth4", "tumor.gt", "tumor.gq", "tumor.depth", "tumor.ref_reads",
                              "tumor.var_reads", "tumor.allele_freq", "tumor.depth4", "depth", "somatic", "somatic_status",
-                             "gpv", "somatic_p_value", "allele", "effect", "impact", "gene", "feature", "biotype",
-                             "exon_rank", "hgvs_cdna", "hgvs_protein", "cds_pos", "cds_len", "AA_pos", "AA_len", "type")
+                             "gpv", "somatic_p_value", "allele", "effect", "impact", "gene", "feature", "feature_id",
+                             "biotype", "exon_rank", "hgvs_cdna", "hgvs_protein", "cds_pos", "cds_len", 
+                             "AA_pos", "AA_len", "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc", "type")
 
 # create a tumor_id column based on the sample id (format is <tumor_id>_<normal_id>) - e.g. GE0556B_GE0556-N
 varScan.calls$tumor.id <- gsub("(.*)\\_(.*)","\\1", varScan.calls$sample)
@@ -129,21 +163,19 @@ varScan.calls$tumor.allele_freq <- gsub("(.*)\\%(.*)","\\1", varScan.calls$tumor
 # apply obvious filters: somatic == true ~ somatic_status == 2
 varScan.calls <- filter(varScan.calls, varScan.calls$somatic == "true")
 
+# NEW - to avoid duplicate (and unwanted) effects for the same variant, only keep mutations with an Ensembl transcript ID
+varScan.calls <- unique(varScan.calls[grep("^ENST", varScan.calls$feature_id), ])
+
 # remove unneeded columns and rearrange as necessary	
 # last few columns are for initial filtering and reference and can be removed later	
 keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein", 
            "normal.depth", "normal.var_reads", "normal.allele_freq", 
            "tumor.depth4", "tumor.depth", "tumor.var_reads", "tumor.allele_freq", 
-           "effect", "impact", "biotype", "external_id", 
-           "somatic_p_value")	
+           "effect", "impact", "biotype", "feature_id", "external_id", 
+           "somatic_p_value", "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc")	
 varScan.calls <- varScan.calls[keeps]	
 
-# mappings for 3-letter amino acids to 1-letter amino acid codes	
-AA.replaces <- data.frame(from = c("Ala", "Arg", "Asn", "Asp", "Asx", "Cys", "Glu", "Gln", "Glx", "Gly", "His", 	
-                                   "Ile", "Leu", "Lys", "Met", "Phe", "Pro", "Ser", "Thr", "Trp", "Tyr", "Val"), 	
-                          to = c("A", "R", "N", "D", "B", "C", "E", "Q", "Z", "G", "H", 	
-                                 "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"))	
-	
+# use 1-letter amino acid codes
 varScan.calls <- FindReplace(data = varScan.calls, 	
                                     Var = "hgvs_protein",	
                                     replaceData = AA.replaces,	
@@ -151,10 +183,6 @@ varScan.calls <- FindReplace(data = varScan.calls,
                                     to = "to",	
                                     exact = FALSE)	
 	
-# replace NA values with blanks in the hgvs_protein column
-varScan.calls$hgvs_protein <- sapply(varScan.calls$hgvs_protein, as.character)
-varScan.calls$hgvs_protein[is.na(varScan.calls$hgvs_protein)] <- " "
-
 # merge T-N data with SNVs
 varScan.calls <- merge(varScan.calls, sample.data, by = "tumor.id", all.x = TRUE)
 
@@ -213,25 +241,13 @@ varScan.calls$tumor.depth4 <- NULL
 # remove duplicates (e.g. due to multiple effects)
 varScan.calls <- unique(varScan.calls)	
 	
-# SnpEff 4.3 annotations to keep (exclude UTR mutations)
-effects.keep <- c("missense_variant", "frameshift_variant", "stop_gained", "frameshift_variant&start_lost",
-                  "conservative_inframe_deletion", "disruptive_inframe_deletion", "disruptive_inframe_insertion",
-                  "splice_acceptor_variant&intron_variant", "splice_donor_variant&intron_variant",
-                  "missense_variant", "missense_variant&splice_region_variant",
-                  "start_gained", "start_lost", "stop_gained", "stop_lost"
-                  )
-
 # easier to just exclude effects (fine tune which ones to exclude with Clementine)
 effects.exclude <- c("intron_variant", "intragenic_variant", "")
-
-#varScan.calls <- filter(varScan.calls, varScan.calls$effect %in% effects.keep)
 varScan.calls <- filter(varScan.calls, !(varScan.calls$effect %in% effects.exclude))
 
 # additional filters
 
 # 1. Remove non-panel genes
-genes.panel <- read.table("/Volumes/shung/projects/gzl_exomes/data/target_panel_Agilent_genes.txt", header=FALSE)
-genes.panel <- as.vector(genes.panel$V1)
 varScan.calls <- filter(varScan.calls, varScan.calls$gene %in% genes.panel)
 
 # 2. *NEW* Remove variants with a *pooled normal* that only have a dbSNP id
@@ -259,7 +275,13 @@ varScan.calls$combine = as.character(paste(
   varScan.calls$ref,	
   varScan.calls$alt,	
   sep = "."	
-  ))	
+  ))
+
+# filter out low impact variants
+varScan.calls <- filter(varScan.calls, varScan.calls$impact != "LOW")
+
+# filter out non protein coding biotypes
+varScan.calls <- filter(varScan.calls, varScan.calls$biotype %in% biotype.keeps)
 
 # NEW: merge effects (and identify highest impact effect) for variants that are annotated with multiple effects
 ```
@@ -267,16 +289,7 @@ varScan.calls$combine = as.character(paste(
 ## Load mutect dataset
 
 ```{r}
-# pilot + batch1 calls
-batch1.mutect.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/pilot_and_batch1/mutect/numbers/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE)
-
-# batch2 calls
-batch2.mutect.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/targeted_batch2_20191011/mutect/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE)
-
-# combine
-mutect.snvs <- rbind(batch1.mutect.snvs, batch2.mutect.snvs)
-rm(batch1.mutect.snvs)
-rm(batch2.mutect.snvs)
+mutect.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/all_samples/mutect/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
 
 mutect.snvs$type = "snv" 
 
@@ -285,8 +298,8 @@ colnames(mutect.snvs) <- c("sample", "chr", "pos", "external_id", "ref",
           "alt", "filter", "normal.gt", "normal.var_reads", "normal.base_qual", 
           "normal.depth", "normal.allele_freq", "normal.somatic_status", "tumor.gt", "tumor.var_reads", 
           "tumor.base_qual", "tumor.depth", "tumor.allele_freq", "somatic_status", "somatic", "VT", "allele", 
-          "effect", "impact", "gene", "feature", "biotype", "exon_rank", "hgvs_cdna", "hgvs_protein", 
-          "cds_pos", "cds_len", "AA_pos", "AA_len", "type")
+          "effect", "impact", "gene", "feature", "feature_id", "biotype", "exon_rank", "hgvs_cdna", "hgvs_protein", 
+          "cds_pos", "cds_len", "AA_pos", "AA_len", "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc", "type")
                          
 # create a tumor_id column based on the sample id (format is <tumor_id>_<normal_id>) - e.g. GE0556B_GE0556-N
 mutect.snvs$tumor.id <- gsub("(.*)\\_(.*)","\\1", mutect.snvs$sample)
@@ -314,7 +327,8 @@ mutect.snvs <- filter(mutect.snvs, as.numeric(tumor.depth) >= MIN_DEPTH)
 keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein",
            "normal.depth", "normal.var_reads", "normal.allele_freq",
            "tumor.depth", "tumor.var_reads", "tumor.allele_freq", 
-           "effect", "impact", "biotype", "external_id")
+           "effect", "impact", "biotype", "feature_id", "external_id", 
+           "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc")
 mutect.snvs <- mutect.snvs[, keeps]
 
 # merge T-N data with SNVs to apply additional filters
@@ -333,7 +347,6 @@ mutect.snvs <-
            into = c("normal.ref_reads", "normal.var_reads"),	
            sep = ",",	convert = TRUE,
            remove = FALSE)	
-
 
 # filters applicable to all samples
 mutect.snvs <- filter(mutect.snvs, as.numeric(tumor.var_reads) >= MIN_VAR_READS_TUMOR) # min required reads in tumor
@@ -379,6 +392,9 @@ rm(mutect.pooledN.rsid)
 rm(mutect.pooledN)
 mutect.snvs <- rbind(mutect.not_pooledN, mutect.pooledN.no_rsid, mutect.pooledN.rs_and_COSM_id)
 
+# NEW - to avoid duplicate (and unwanted) effects for the same variant, only keep mutations with an Ensembl transcript ID
+mutect.snvs <- unique(mutect.snvs[grep("^ENST", mutect.snvs$feature_id), ])
+
 mutect.snvs$combine = as.character(paste(
   mutect.snvs$tumor.id,
   mutect.snvs$type,
@@ -396,6 +412,14 @@ mutect.snvs <- FindReplace(data = mutect.snvs,
                                     from = "from",	
                                     to = "to",	
                                     exact = FALSE)	
+
+# filter out low impact variants
+mutect.snvs <- filter(mutect.snvs, mutect.snvs$impact != "LOW")
+
+# filter out non protein coding biotypes
+mutect.snvs <- filter(mutect.snvs, mutect.snvs$biotype %in% biotype.keeps)
+
+#calls.all <- filter(calls.all, calls.all$effect != "sequence_feature")
 
 # NEW: merge effects (and identify highest impact effect) for variants that are annotated with multiple effects
 
