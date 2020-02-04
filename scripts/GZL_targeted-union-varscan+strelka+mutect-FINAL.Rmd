@@ -1,0 +1,1060 @@
+---	
+title: "Intersect VarScan and Strelka"	
+author: "Stacy Hung"	
+date: "November 25, 2019"	
+output: html_document	
+---	
+	
+This script performs the following tasks:	
+1. Filters varScan predictions
+2. Intersects varScan with Strelka and Mutect predictions (indels from VarScan and Strelka only)
+
+Important notes:
+- LOF is associated with 4 fields: (i) gene, (ii) gene id (usually ensembl), (iii) number of transcripts, and (iv) percentage of transcripts affected by this variant
+- When the Ensembl transcript ID is not included in the output, it is really hard to filter out weird effects that end up being duplicates for a variant (e.g. whenever a variant is annotated with sequence_feature, it is also annotated with a standard effect like missense or nonsense) - to filter out these effects, it is key to include the "FEATUREID" (aka transcript ID) - then by keeping variants with annotation only via the Ensembl transcript ID, we retain a standard list of effects 
+
+for "batch #2" samples of the GZL targeted sequencing cohort.  Note that 9 samples that were sequenced as part of this cohort, should be excluded, either due to poor DNA quality or they are composite samples ("sequential"):
+ 	
+## Load libraries
+ 	
+```{r}
+library(dplyr)        # filter	
+library(plyr)         # revalue
+library(tidyr)        # separate	
+library(DataCombine)  # find and replace
+library(reshape2)     # colsplit
+```
+
+## Define samples to be excluded and global variables
+
+```{r}
+
+# read in data that contains information on tumor content and tissue type of the normal
+sample.data <- read.table("/Volumes/shung/projects/gzl_targeted/data/gzl_targeted-T_N-samples.txt", sep = "\t", header = TRUE, fill = TRUE, as.is = TRUE)
+
+# only keep samples that were sequenced as part of validation cohort
+sample.data <- filter(sample.data, sample.data$result == "validation")
+
+# extract only required columns
+sample.data <- sample.data[, c("tumor.tumor_id", "tumor.tissue_type.v2", "tumor_content", "tumor.mean_target_coverage", "normal.extraction_method.v2")]
+colnames(sample.data) <- c("tumor.id", "tumor.tissue_type", "tumor_content", "tumor.mean_target_coverage", "normal.extraction_method")
+
+# exclude LMD samples that have < 40X coverage or < 100X for all other samples
+sample.data.1 <- filter(sample.data, tumor.tissue_type == "FFPE_LMD" & as.numeric(tumor.mean_target_coverage) > 40)
+sample.data.2 <- filter(sample.data, tumor.tissue_type != "FFPE_LMD" & as.numeric(tumor.mean_target_coverage) > 100)
+sample.data <- rbind(sample.data.1, sample.data.2)
+
+# panel genes
+genes.panel <- read.table("/Volumes/shung/projects/gzl_exomes/data/target_panel_Agilent_genes.txt", header=FALSE)
+genes.panel <- as.vector(genes.panel$V1)
+
+# mappings for 3-letter amino acids to 1-letter amino acid codes	
+AA.replaces <- data.frame(from = c("Ala", "Arg", "Asn", "Asp", "Asx", "Cys", "Glu", "Gln", "Glx", "Gly", "His", 	
+                                   "Ile", "Leu", "Lys", "Met", "Phe", "Pro", "Ser", "Thr", "Trp", "Tyr", "Val"), 	
+                          to = c("A", "R", "N", "D", "B", "C", "E", "Q", "Z", "G", "H", 	
+                                 "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"))	
+
+# filter for protein coding biotypes
+biotype.keeps <- c("IG_C_gene", "IG_D_gene", "IG_gene", "IG_J_gene", "IGL_V_gene", "IG_M_gene", "IG_V_gene",
+                   "IG_Z_gene", "nonsense_mediated_decay", "nontranslating_CDS", "non_stop_decay",
+                   "polymorphic_pseudogene", "TR_C_gene", "TR_D_gene", "TR_J_gene", "protein_coding")
+
+# define thresholds for all samples EXCEPT for tumors paired to LMD normals
+MAX_SOMATIC_PVAL = 0.05
+MIN_VAR_READS_TUMOR = 3
+# note we, are leaving out the filter for VAF since variant reads will already filter out low-frequency variants if coverage is low (but since we generally have very high coverage for the targeted samples, this is not a major issue)
+
+# apply OPTIMIZED thresholds to tumor vs. LMD normals samples
+MAX_SOMATIC_PVAL.LMD_OPT = 0.1375   # OPTIMIZED
+MAX_VAR_AF_NORMAL.LMD_OPT = 10      # OPTIMIZED; as a percentage
+
+# germline filters where tumor content is <20% (temporary) --> remove variants with VAF between 45-55% or >90%
+GERMLINE_AF_HETERO_LOW = 45   # lower bound for heterozygous germline variant
+GERMLINE_AF_HETERO_HIGH = 55  # upper bound for heterozygous germline variant
+GERMLINE_AF_HOMO_LOW = 90      # lower bound for homozygous germline variant
+
+# miniumum depth at position:
+MIN_DEPTH = 20;
+
+# minimum number of variant reads in normal
+MAX_VAR_READS_NORMAL = 2;
+
+# define normal groups
+normals.pooled <- c("pooled_LMD_N", "pooled normal")
+normals.LMD <- c("pooled_LMD_N", "LMD")
+
+```
+
+## Load and filter varScan dataset	
+
+```{r}
+varScan.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/all_samples/varscan/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
+varScan.indels <- read.table("/Volumes/shung/projects/gzl_targeted/all_samples/varscan/all_indels.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+# specify type of mutation
+varScan.indels$type <- "indel"
+varScan.snvs$type <- "snv"
+
+# combine snvs and indels
+varScan.calls <- rbind(varScan.indels, varScan.snvs)
+rm(varScan.indels)
+rm(varScan.snvs)
+
+# rename columns	
+colnames(varScan.calls) <- c("sample", "chr", "pos", "external_id", "ref", "alt", "filter", 
+                             "gt_normal", "gq_normal", "normal.depth", "normal.ref_reads", "normal.var_reads",
+                             "normal.allele_freq", "normal.depth4", "tumor.gt", "tumor.gq", "tumor.depth",
+                             "tumor.ref_reads", "tumor.var_reads", "tumor.allele_freq", "tumor.depth4", 
+                             "depth", "somatic", "somatic_status", "gpv", "somatic_p_value", "allele", 
+                             "effect", "impact", "gene", "feature", "feature_id", "biotype", "exon_rank", 
+                             "hgvs_cdna", "hgvs_protein", "cds_pos", "cds_len", "AA_pos", "AA_len", 
+                             "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc", "type")
+
+# create a tumor_id column based on the sample id (format is <tumor_id>_<normal_id>) - e.g. GE0556B_GE0556-N
+varScan.calls$tumor.id <- gsub("(.*)\\_(.*)","\\1", varScan.calls$sample)
+# similarly create a normal_id column
+varScan.calls$normal.id <- gsub("(.*)\\_(.*)","\\2", varScan.calls$sample)
+
+# rename specific tumor ids so that sample information can be properly mapped
+tumor_id.to.mappable_tumor_id <- c("GZ-170-merged.sorted"="GZ-170-merged")
+varScan.calls$tumor.id <- revalue(varScan.calls$tumor.id, tumor_id.to.mappable_tumor_id)
+
+# remove excluded samples
+varScan.calls <- filter(varScan.calls, varScan.calls$tumor.id %in% sample.data$tumor.id)
+
+# remove "%" from the allele frequency	
+varScan.calls$normal.allele_freq <- gsub("(.*)\\%(.*)","\\1", varScan.calls$normal.allele_freq)	
+varScan.calls$tumor.allele_freq <- gsub("(.*)\\%(.*)","\\1", varScan.calls$tumor.allele_freq)	
+
+# apply obvious filters: somatic == true ~ somatic_status == 2
+varScan.calls <- filter(varScan.calls, varScan.calls$somatic == "true")
+
+# NEW - to avoid duplicate (and unwanted) effects for the same variant, only keep mutations with an Ensembl transcript ID
+varScan.calls <- unique(varScan.calls[grep("^ENST", varScan.calls$feature_id), ])
+
+# apply filter for minimum variant reads in tumor and normal
+varScan.calls <- filter(varScan.calls, as.numeric(tumor.var_reads) >= MIN_VAR_READS_TUMOR)
+
+# Remove non-panel genes
+varScan.calls <- filter(varScan.calls, varScan.calls$gene %in% genes.panel)
+
+# exclude non-coding variants
+effects.exclude <- c("intron_variant", "intragenic_variant", "", "sequence_feature")
+varScan.calls <- filter(varScan.calls, !(varScan.calls$effect %in% effects.exclude))
+
+# filter out low impact variants
+varScan.calls <- filter(varScan.calls, varScan.calls$impact != "LOW")
+
+# filter out non protein coding biotypes
+varScan.calls <- filter(varScan.calls, varScan.calls$biotype %in% biotype.keeps)
+
+# remove unneeded columns and rearrange as necessary	
+# last few columns are for initial filtering and reference and can be removed later	
+keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein", 
+           "normal.depth", "normal.var_reads", "normal.allele_freq", 
+           "tumor.depth4", "tumor.depth", "tumor.var_reads", "tumor.allele_freq", 
+           "effect", "impact", "biotype", "feature_id", "external_id", 
+           "somatic_p_value", "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc")	
+varScan.calls <- varScan.calls[keeps]	
+
+# use 1-letter amino acid codes
+varScan.calls <- FindReplace(data = varScan.calls, 	
+                                    Var = "hgvs_protein",	
+                                    replaceData = AA.replaces,	
+                                    from = "from",	
+                                    to = "to",	
+                                    exact = FALSE)	
+	
+# merge T-N data with SNVs
+varScan.calls <- merge(varScan.calls, sample.data, by = "tumor.id", all.x = TRUE)
+
+# Remove variants with a *pooled normal* that only have a dbSNP id
+# Psuedocode:
+#   1) Store variants from tumors matched to non-pooled normal
+#   2) Store variants from tumors matched to pooled normal and do not have an rs id (no ids, or COSM id(s))
+#   3) Store variants from tumors matched to pooled normal and do have an rs id (rs + COSM id(s), or rs id)
+#   4) Store variants from (3) that have a COSM id
+#   5) Remove list of variants from (3)
+#   6) Rbind variants from 1, 2 and 4
+varScan.not_pooledN <- filter(varScan.calls, !(normal.extraction_method %in% normals.pooled)) # dataset 1
+varScan.pooledN <- filter(varScan.calls, normal.extraction_method %in% normals.pooled)
+varScan.pooledN.no_rsid <- filter(varScan.pooledN, !grepl("rs", varScan.pooledN$external_id)) # dataset 2
+varScan.pooledN.rsid <- filter(varScan.pooledN, grepl("rs", varScan.pooledN$external_id)) # dataset 3
+varScan.pooledN.rs_and_COSM_id <- filter(varScan.pooledN.rsid, grepl("COSM", varScan.pooledN.rsid$external_id)) # 4
+rm(varScan.pooledN.rsid)
+rm(varScan.pooledN)
+varScan.calls <- rbind(varScan.not_pooledN, varScan.pooledN.no_rsid, varScan.pooledN.rs_and_COSM_id)
+
+# apply different filters depending on the type of normal (LMD vs. not LMD)
+varScan.calls <- filter(varScan.calls, 
+                           ( (normal.extraction_method %in% normals.LMD) &
+                             (as.numeric(somatic_p_value) < MAX_SOMATIC_PVAL.LMD_OPT) & 
+                             (as.numeric(normal.allele_freq) < MAX_VAR_AF_NORMAL.LMD_OPT)
+                           ) | 
+                           ( (!(normal.extraction_method %in% normals.LMD) | is.na(normal.extraction_method)) &
+                             (as.numeric(somatic_p_value) < MAX_SOMATIC_PVAL) &
+                             (as.numeric(normal.allele_freq) < 0.05*as.numeric(tumor.allele_freq)) &
+                             (as.numeric(normal.var_reads) <= MAX_VAR_READS_NORMAL)
+                           ) 
+                        )
+varScan.calls$somatic_p_value <- NULL # no longer needed
+
+# apply different filters depending on tumor content: <= 20% (and pooled normal)  or >20% 
+varScan.calls <- filter(varScan.calls, 
+                        ( (as.numeric(tumor_content) <= 20 & normal.extraction_method %in% normals.pooled) &
+                           ( (as.numeric(tumor.allele_freq) < GERMLINE_AF_HETERO_LOW) | 
+                             (as.numeric(tumor.allele_freq) > GERMLINE_AF_HETERO_HIGH & 
+                                as.numeric(tumor.allele_freq) < GERMLINE_AF_HOMO_LOW)
+                           )
+                         ) | 
+                   (as.numeric(tumor_content) > 20) | 
+                   (is.na(tumor_content)) | 
+                   (as.numeric(tumor_content) <= 20 & !(normal.extraction_method %in% normals.pooled))
+                 )
+
+# strand bias filter (temporary; to be implemented as part of VarScan pipeline for next batch)
+varScan.calls <-	
+  separate(data = varScan.calls,	
+           col = tumor.depth4,	
+           into = c("tumor.ref_reads.forward", "tumor.ref_reads.reverse",
+                  "tumor.var_reads.forward", "tumor.var_reads.reverse"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)	
+
+# NB: there is a huge number of variants exhibiting strand bias, so number of mutations is severely reduced after this step
+varScan.calls <- filter(varScan.calls, 
+                        !(as.numeric(tumor.var_reads.forward) > as.numeric(0.9*as.numeric(tumor.var_reads))) & 
+                          !(as.numeric(tumor.var_reads.reverse) > as.numeric(0.9*as.numeric(tumor.var_reads))))
+
+# update actual tumor depth
+varScan.calls$tumor.depth <- varScan.calls$tumor.ref_reads.forward + varScan.calls$tumor.ref_reads.reverse +
+  varScan.calls$tumor.var_reads.forward + varScan.calls$tumor.var_reads.reverse
+
+# remove columns for strand bias check since they are no longer needed
+varScan.calls$tumor.ref_reads.forward <- NULL
+varScan.calls$tumor.ref_reads.reverse <- NULL
+varScan.calls$tumor.var_reads.forward <- NULL
+varScan.calls$tumor.var_reads.reverse <- NULL
+varScan.calls$tumor.depth4 <- NULL
+
+# remove duplicates (e.g. due to multiple effects)
+varScan.calls <- unique(varScan.calls)	
+
+write.table(varScan.calls, "/Volumes/shung/projects/gzl_targeted/all_samples/varscan/varscan.calls.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+	
+varScan.calls$combine = as.character(paste(	
+  varScan.calls$tumor.id, 	
+  varScan.calls$type,
+  varScan.calls$chr, 	
+  varScan.calls$pos, 	
+  varScan.calls$ref,	
+  varScan.calls$alt,	
+  sep = "."	
+  ))
+```
+
+## Load mutect dataset
+
+```{r}
+mutect.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/all_samples/mutect/all_snvs.snpEff_canonical.dbsnp_annotated.cosmic_annotated.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+mutect.snvs$type = "snv" 
+
+# rename columns
+colnames(mutect.snvs) <- c("sample", "chr", "pos", "external_id", "ref", 
+          "alt", "filter", "normal.gt", "normal.var_reads", "normal.base_qual", 
+          "normal.depth", "normal.allele_freq", "normal.somatic_status", "tumor.gt", "tumor.var_reads", 
+          "tumor.base_qual", "tumor.depth", "tumor.allele_freq", "somatic_status", "somatic", "VT", "allele", 
+          "effect", "impact", "gene", "feature", "feature_id", "biotype", "exon_rank", "hgvs_cdna", "hgvs_protein", 
+          "cds_pos", "cds_len", "AA_pos", "AA_len", "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc", "type")
+                         
+# create a tumor_id column based on the sample id (format is <tumor_id>_<normal_id>) - e.g. GE0556B_GE0556-N
+mutect.snvs$tumor.id <- gsub("(.*)\\_(.*)","\\1", mutect.snvs$sample)
+# similarly create a normal_id column
+mutect.snvs$normal.id <- gsub("(.*)\\_(.*)","\\2", mutect.snvs$sample)
+
+# convert allele frequencies to percent instead of fraction (to be consistent with VarScan)
+mutect.snvs$normal.allele_freq <- mutect.snvs$normal.allele_freq*100
+mutect.snvs$tumor.allele_freq <- mutect.snvs$tumor.allele_freq*100
+
+# rename specific tumor ids so that sample information can be properly mapped
+tumor_id.to.mappable_tumor_id <- c("GZ-170-merged.sorted"="GZ-170-merged")
+mutect.snvs$tumor.id <- revalue(mutect.snvs$tumor.id, tumor_id.to.mappable_tumor_id)
+
+# remove excluded samples
+mutect.snvs <- filter(mutect.snvs, mutect.snvs$tumor.id %in% sample.data$tumor.id)
+
+# filter out low-quality bases (BQ < 20)
+mutect.snvs <- filter(mutect.snvs, mutect.snvs$tumor.base_qual >= 20)
+
+# unlike in VarScan, depth at variant position is not filtered; filter for min 20X coverage
+mutect.snvs <- filter(mutect.snvs, as.numeric(tumor.depth) >= MIN_DEPTH)
+
+# remove non-informtive / redundant columns
+keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein",
+           "normal.depth", "normal.var_reads", "normal.allele_freq",
+           "tumor.depth", "tumor.var_reads", "tumor.allele_freq", 
+           "effect", "impact", "biotype", "feature_id", "external_id", 
+           "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc")
+mutect.snvs <- mutect.snvs[, keeps]
+
+# merge T-N data with SNVs to apply additional filters
+mutect.snvs <- merge(mutect.snvs, sample.data, by = "tumor.id", all.x = TRUE)
+
+# extract tumor variant reads
+mutect.snvs <-	
+  separate(data = mutect.snvs,	
+           col = tumor.var_reads,	
+           into = c("tumor.ref_reads", "tumor.var_reads"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)	
+mutect.snvs <-	
+  separate(data = mutect.snvs,	
+           col = normal.var_reads,	
+           into = c("normal.ref_reads", "normal.var_reads"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)	
+
+# filters applicable to all samples
+mutect.snvs <- filter(mutect.snvs, as.numeric(tumor.var_reads) >= MIN_VAR_READS_TUMOR) # min required reads in tumor
+mutect.snvs <- filter(mutect.snvs, mutect.snvs$gene %in% genes.panel) # filter for panel genes
+effects.exclude <- c("intron_variant", "intragenic_variant", "", "sequence_feature")
+mutect.snvs <- filter(mutect.snvs, !(mutect.snvs$effect %in% effects.exclude)) # filter for protein-altering effects
+
+# apply different filters depending on the type of normal (LMD vs. not LMD)
+mutect.snvs <- filter(mutect.snvs, 
+                           ( (normal.extraction_method %in% normals.LMD) &
+                             (as.numeric(normal.allele_freq) < MAX_VAR_AF_NORMAL.LMD_OPT)
+                           ) | 
+                           ( (!(normal.extraction_method %in% normals.LMD) | is.na(normal.extraction_method)) &
+                             (as.numeric(normal.allele_freq) < 0.05*as.numeric(tumor.allele_freq)) &
+                             (as.numeric(normal.var_reads) <= MAX_VAR_READS_NORMAL)
+                           ) 
+                        )
+mutect.snvs$somatic_p_value <- NULL # no longer needed
+
+# apply different filters depending on tumor content: <= 20% (and pooled normal)  or >20% 
+mutect.snvs <- filter(mutect.snvs, 
+                        ( (as.numeric(tumor_content) <= 20 & normal.extraction_method %in% normals.pooled) &
+                           ( (as.numeric(tumor.allele_freq) < GERMLINE_AF_HETERO_LOW) | 
+                             (as.numeric(tumor.allele_freq) > GERMLINE_AF_HETERO_HIGH & 
+                                as.numeric(tumor.allele_freq) < GERMLINE_AF_HOMO_LOW)
+                           )
+                         ) | 
+                   (as.numeric(tumor_content) > 20) | 
+                   (is.na(tumor_content)) | 
+                   (as.numeric(tumor_content) <= 20 & !(normal.extraction_method %in% normals.pooled))
+                 )
+
+# note strand bias filter cannot be applied to mutect calls since no strand-specific information is output
+
+# Remove variants with a *pooled normal* that only have a dbSNP id
+# Psuedocode:
+#   1) Store variants from tumors matched to non-pooled normal
+#   2) Store variants from tumors matched to pooled normal and do not have an rs id (no ids, or COSM id(s))
+#   3) Store variants from tumors matched to pooled normal and do have an rs id (rs + COSM id(s), or rs id)
+#   4) Store variants from (3) that have a COSM id
+#   5) Remove list of variants from (3)
+#   6) Rbind variants from 1, 2 and 4
+
+mutect.not_pooledN <- filter(mutect.snvs, !(normal.extraction_method %in% normals.pooled)) # dataset 1
+mutect.pooledN <- filter(mutect.snvs, normal.extraction_method %in% normals.pooled)
+mutect.pooledN.no_rsid <- filter(mutect.pooledN, !grepl("rs", mutect.pooledN$external_id)) # dataset 2
+mutect.pooledN.rsid <- filter(mutect.pooledN, grepl("rs", mutect.pooledN$external_id)) # dataset 3
+mutect.pooledN.rs_and_COSM_id <- filter(mutect.pooledN.rsid, grepl("COSM", mutect.pooledN.rsid$external_id)) # dataset 4
+rm(mutect.pooledN.rsid)
+rm(mutect.pooledN)
+mutect.snvs <- rbind(mutect.not_pooledN, mutect.pooledN.no_rsid, mutect.pooledN.rs_and_COSM_id)
+
+# NEW - to avoid duplicate (and unwanted) effects for the same variant, only keep mutations with an Ensembl transcript ID
+mutect.snvs <- unique(mutect.snvs[grep("^ENST", mutect.snvs$feature_id), ])
+
+mutect.snvs$combine = as.character(paste(
+  mutect.snvs$tumor.id,
+  mutect.snvs$type,
+  mutect.snvs$chr,
+  mutect.snvs$pos,
+  mutect.snvs$ref,
+  mutect.snvs$alt,
+  sep = "."
+))
+
+# map three-letter amino acid codes to one-letter codes
+mutect.snvs <- FindReplace(data = mutect.snvs, 	
+                                    Var = "hgvs_protein",	
+                                    replaceData = AA.replaces,	
+                                    from = "from",	
+                                    to = "to",	
+                                    exact = FALSE)	
+
+# filter out low impact variants
+mutect.snvs <- filter(mutect.snvs, mutect.snvs$impact != "LOW")
+
+# filter out non protein coding biotypes
+mutect.snvs <- filter(mutect.snvs, mutect.snvs$biotype %in% biotype.keeps)
+
+```
+
+## Load strelka dataset	
+
+Extracting alelle frequencies for strelka SNVs:
+
+refCounts = value in "GEN.TUMOR..XU" column; where REF = X {A, C, G, T}
+altCounts = value in "GEN.TUMOR..YU" column; where ALT = Y {A, C, G, T}
+tier1RefCounts = first comma-delimited value from refCounts
+tier1AltCounts = first comma-delimited value from altCounts
+somatic allele frequency = tier1AltCounts / (tier1AltCounts + tier1RefCounts)
+  
+Extracting allele frequencies for strelka indels:
+
+tier1RefCounts = first comma-delimited value in TAR
+tier1AltCounts = first comma-delimited value in TIR
+somatic allele frequency = tier1AltCounts / (tier1AltCounts + tier1RefCounts)
+  
+
+```{r}
+strelka.snvs <- read.table("/Volumes/shung/projects/gzl_targeted/all_samples/strelka/all.snvs.txt", sep = "\t", header = TRUE, fill = TRUE)
+strelka.indels <- read.table("/Volumes/shung/projects/gzl_targeted/all_samples/strelka/all.indels.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+# label type of mutation
+strelka.snvs$type <- "snv"
+strelka.indels$type <- "indel"
+
+# create a tumor_id column based on the sample id (format is <tumor_id>_<normal_id>) - e.g. GE0556B_GE0556-N
+strelka.snvs$tumor.id <- gsub("(.*)\\_(.*)","\\1", strelka.snvs$SAMPLE)
+strelka.indels$tumor.id <- gsub("(.*)\\_(.*)","\\1", strelka.indels$SAMPLE)
+# similarly create a normal_id column
+strelka.snvs$normal.id <- gsub("(.*)\\_(.*)","\\2", strelka.snvs$SAMPLE)
+strelka.indels$normal.id <- gsub("(.*)\\_(.*)","\\2", strelka.indels$SAMPLE)
+
+# extract columns for filtering: variant tumor reads, allele frequency, effect, gene
+
+# columns of unknown meaning:
+#   "GEN.NORMAL..FDP"
+#   "GEN.TUMOR..FDP" 
+
+## Extract somatic variant allele frequencies from strelka snvs - 5 steps:
+## Note that the steps are the same for calculating tumor and normal (except column names are different)
+
+# 1) refCounts = value in "GEN.TUMOR..XU" column; where REF = X {A, C, G, T}
+strelka.snvs <- strelka.snvs %>%
+  mutate(refCounts = ifelse(as.character(REF) == "A", as.character(strelka.snvs$GEN.TUMOR..AU),
+                            ifelse(as.character(REF) == "C", as.character(strelka.snvs$GEN.TUMOR..CU),
+                                   ifelse(as.character(REF) == "G", as.character(strelka.snvs$GEN.TUMOR..GU),
+                                          as.character(strelka.snvs$GEN.TUMOR..TU)))))
+strelka.snvs <- strelka.snvs %>%
+  mutate(normal.refCounts = ifelse(as.character(REF) == "A", as.character(strelka.snvs$GEN.NORMAL..AU),
+                            ifelse(as.character(REF) == "C", as.character(strelka.snvs$GEN.NORMAL..CU),
+                                   ifelse(as.character(REF) == "G", as.character(strelka.snvs$GEN.NORMAL..GU),
+                                          as.character(strelka.snvs$GEN.NORMAL..TU)))))
+
+# 2) altCounts = value in "GEN.TUMOR..YU" column; where ALT = Y {A, C, G, T}
+strelka.snvs <- strelka.snvs %>%
+  mutate(altCounts = ifelse(as.character(ALT) == "A", as.character(strelka.snvs$GEN.TUMOR..AU),
+                            ifelse(as.character(ALT) == "C", as.character(strelka.snvs$GEN.TUMOR..CU),
+                                   ifelse(as.character(ALT) == "G", as.character(strelka.snvs$GEN.TUMOR..GU),
+                                          as.character(strelka.snvs$GEN.TUMOR..TU)))))
+strelka.snvs <- strelka.snvs %>%
+  mutate(normal.altCounts = ifelse(as.character(ALT) == "A", as.character(strelka.snvs$GEN.NORMAL..AU),
+                            ifelse(as.character(ALT) == "C", as.character(strelka.snvs$GEN.NORMAL..CU),
+                                   ifelse(as.character(ALT) == "G", as.character(strelka.snvs$GEN.NORMAL..GU),
+                                          as.character(strelka.snvs$GEN.NORMAL..TU)))))
+
+# 3) tier1RefCounts = first comma-delimited value from refCounts
+strelka.snvs <-	
+  separate(data = strelka.snvs,	
+           col = refCounts,	
+           into = c("tier1RefCounts", "tier2RefCounts"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)
+strelka.snvs$tier2RefCounts <- NULL
+
+strelka.snvs <-	
+  separate(data = strelka.snvs,	
+           col = normal.refCounts,	
+           into = c("normal.tier1RefCounts", "normal.tier2RefCounts"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)
+strelka.snvs$normal.tier2RefCounts <- NULL
+
+# 4) tier1AltCounts = first comma-delimited value from altCounts
+strelka.snvs <-	
+  separate(data = strelka.snvs,	
+           col = altCounts,	
+           into = c("tier1AltCounts", "tier2AltCounts"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)
+strelka.snvs$tier2AltCounts <- NULL
+
+strelka.snvs <-	
+  separate(data = strelka.snvs,	
+           col = normal.altCounts,	
+           into = c("normal.tier1AltCounts", "normal.tier2AltCounts"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)
+strelka.snvs$normal.tier2AltCounts <- NULL
+
+# 5) somatic allele frequency = tier1AltCounts / (tier1AltCounts + tier1RefCounts)
+strelka.snvs$tumor.allele_freq <- 
+  ( strelka.snvs$tier1AltCounts / (strelka.snvs$tier1AltCounts + strelka.snvs$tier1RefCounts) ) * 100
+strelka.snvs$normal.allele_freq <- (strelka.snvs$normal.tier1AltCounts / (strelka.snvs$normal.tier1AltCounts + strelka.snvs$normal.tier1RefCounts) ) * 100
+
+# create intuitive columns to represent (tumor/normal) depth and (tumor/normal) variant depth:
+strelka.snvs$tumor.depth <- strelka.snvs$tier1AltCounts + strelka.snvs$tier1RefCounts
+strelka.snvs$tumor.var_depth <- strelka.snvs$tier1AltCounts
+strelka.snvs$normal.depth <- strelka.snvs$normal.tier1AltCounts + strelka.snvs$normal.tier1RefCounts
+strelka.snvs$normal.var_depth <- strelka.snvs$normal.tier1AltCounts
+
+
+## Extract somatic variant allele frequencies from strelka indels - 3 steps:
+
+# 1) tier1RefCounts = first comma-delimited value in TAR
+strelka.indels <-
+  separate(data = strelka.indels,
+           col = GEN.TUMOR..TAR,
+           into = c("tier1RefCounts", "tier2RefCounts"),
+           sep = ",", convert = TRUE,
+           remove = FALSE)
+strelka.indels$tier2RefCounts <- NULL
+
+strelka.indels <-
+  separate(data = strelka.indels,
+           col = GEN.NORMAL..TAR,
+           into = c("normal.tier1RefCounts", "normal.tier2RefCounts"),
+           sep = ",", convert = TRUE,
+           remove = FALSE)
+strelka.indels$normal.tier2RefCounts <- NULL
+
+# 2) tier1AltCounts = first comma-delimited value in TIR
+strelka.indels <-
+  separate(data = strelka.indels,
+           col = GEN.TUMOR..TIR,
+           into = c("tier1AltCounts", "tier2AltCounts"),
+           sep = ",", convert = TRUE,
+           remove = FALSE)
+strelka.indels$tier2AltCounts <- NULL
+
+strelka.indels <-
+  separate(data = strelka.indels,
+           col = GEN.NORMAL..TIR,
+           into = c("normal.tier1AltCounts", "normal.tier2AltCounts"),
+           sep = ",", convert = TRUE,
+           remove = FALSE)
+strelka.indels$normal.tier2AltCounts <- NULL
+
+# 3) somatic allele frequency = tier1AltCounts / (tier1AltCounts + tier1RefCounts)
+strelka.indels$tumor.allele_freq <- 
+  (strelka.indels$tier1AltCounts / (strelka.indels$tier1AltCounts + strelka.indels$tier1RefCounts) )*100
+
+strelka.indels$normal.allele_freq <- 
+  (strelka.indels$normal.tier1AltCounts / (strelka.indels$normal.tier1AltCounts + strelka.indels$normal.tier1RefCounts) )*100
+
+# create intuitive columns to represent (tumor/normal) depth and (tumor/normal) variant depth:
+strelka.indels$tumor.depth <- strelka.indels$tier1AltCounts + strelka.indels$tier1RefCounts
+strelka.indels$tumor.var_depth <- strelka.indels$tier1AltCounts
+strelka.indels$normal.depth <- strelka.indels$normal.tier1AltCounts + strelka.indels$normal.tier1RefCounts
+strelka.indels$normal.var_depth <- strelka.indels$normal.tier1AltCounts
+
+# extract only columns of interest so that we can combine snvs and indels
+keeps <- c("tumor.id", "normal.id", "type", "CHROM", "POS", "ANN....GENE", "REF", "ALT",
+                 "ANN....HGVS_C", "ANN....HGVS_P", "normal.depth", "normal.var_depth", "normal.allele_freq",
+                 "tumor.depth", "tumor.var_depth", "tumor.allele_freq", "ANN....EFFECT", "ANN....IMPACT",
+                 "ANN....BIOTYPE", "ID", "ANN....FEATUREID", "LOF....GENE", "LOF....GENEID", "LOF....NUMTR", "LOF....PERC")
+strelka.indels <- strelka.indels[, keeps]
+strelka.snvs <- strelka.snvs[, keeps]
+
+# combine snvs and indels into a single calls dataframe
+strelka.calls <- rbind(strelka.snvs, strelka.indels)
+rm(strelka.indels)	
+rm(strelka.snvs)
+
+# rename columns so they are more intuitive:
+colnames(strelka.calls) <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt",
+                             "hgvs_cdna", "hgvs_protein", "normal.depth", "normal.var_reads", "normal.allele_freq",
+                             "tumor.depth", "tumor.var_reads", "tumor.allele_freq", "effect", "impact", "biotype",
+                             "external_id", "feature_id", "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc")
+
+# rename specific tumor ids so that sample information can be properly mapped
+tumor_id.to.mappable_tumor_id <- c("GZ-170-merged.sorted"="GZ-170-merged")
+strelka.calls$tumor.id <- revalue(strelka.calls$tumor.id, tumor_id.to.mappable_tumor_id)
+
+## Apply filters
+
+# note strand bias filter cannot be applied to mutect calls since no strand-specific information is output
+
+# remove excluded samples
+strelka.calls <- filter(strelka.calls, strelka.calls$tumor.id %in% sample.data$tumor.id)
+
+# unlike in VarScan, depth at variant position is not filtered; filter for min 20X coverage
+strelka.calls <- filter(strelka.calls, as.numeric(tumor.depth) >= MIN_DEPTH)
+
+# apply filters applicable to all samples
+strelka.calls <- filter(strelka.calls, as.numeric(tumor.var_reads) >= MIN_VAR_READS_TUMOR)
+strelka.calls <- filter(strelka.calls, strelka.calls$gene %in% genes.panel) # filter for panel genes
+
+# exclude effects
+effects.exclude <- c("intron_variant", "intragenic_variant", "", "sequence_feature")
+strelka.calls <- filter(strelka.calls, !(strelka.calls$effect %in% effects.exclude))
+
+# merge T-N data with SNVs to apply additional filters
+strelka.calls <- merge(strelka.calls, sample.data, by = "tumor.id", all.x = TRUE)
+
+# apply different filters depending on the type of normal (LMD vs. not LMD)
+strelka.calls <- filter(strelka.calls, 
+                           ( (normal.extraction_method %in% normals.LMD) &
+                             (as.numeric(normal.allele_freq) < MAX_VAR_AF_NORMAL.LMD_OPT)
+                           ) | 
+                           ( (!(normal.extraction_method %in% normals.LMD) | is.na(normal.extraction_method)) &
+                             (as.numeric(normal.allele_freq) < 0.05*as.numeric(tumor.allele_freq)) &
+                             (as.numeric(normal.var_reads) <= MAX_VAR_READS_NORMAL)
+                           ) 
+                        )
+strelka.calls$somatic_p_value <- NULL # no longer needed
+
+# apply different filters depending on tumor content: <= 20% (and pooled normal)  or >20% 
+strelka.calls <- filter(strelka.calls, 
+                        ( (as.numeric(tumor_content) <= 20 & normal.extraction_method %in% normals.pooled) &
+                           ( (as.numeric(tumor.allele_freq) < GERMLINE_AF_HETERO_LOW) | 
+                             (as.numeric(tumor.allele_freq) > GERMLINE_AF_HETERO_HIGH & 
+                                as.numeric(tumor.allele_freq) < GERMLINE_AF_HOMO_LOW)
+                           )
+                         ) | 
+                   (as.numeric(tumor_content) > 20) | 
+                   (is.na(tumor_content)) | 
+                   (as.numeric(tumor_content) <= 20 & !(normal.extraction_method %in% normals.pooled))
+                 )
+
+# Remove variants with a *pooled normal* that only have a dbSNP id
+# Psuedocode:
+#   1) Store variants from tumors matched to non-pooled normal
+#   2) Store variants from tumors matched to pooled normal and do not have an rs id (no ids, or COSM id(s))
+#   3) Store variants from tumors matched to pooled normal and do have an rs id (rs + COSM id(s), or rs id)
+#   4) Store variants from (3) that have a COSM id
+#   5) Remove list of variants from (3)
+#   6) Rbind variants from 1, 2 and 4
+strelka.not_pooledN <- filter(strelka.calls, !(normal.extraction_method %in% normals.pooled)) # dataset 1
+strelka.pooledN <- filter(strelka.calls, normal.extraction_method %in% normals.pooled)
+strelka.pooledN.no_rsid <- filter(strelka.pooledN, !grepl("rs", strelka.pooledN$external_id)) # dataset 2
+strelka.pooledN.rsid <- filter(strelka.pooledN, grepl("rs", strelka.pooledN$external_id)) # dataset 3
+strelka.pooledN.rs_and_COSM_id <- filter(strelka.pooledN.rsid, grepl("COSM", strelka.pooledN.rsid$external_id)) # dataset 4
+rm(strelka.pooledN.rsid)
+rm(strelka.pooledN)
+strelka.calls <- rbind(strelka.not_pooledN, strelka.pooledN.no_rsid, strelka.pooledN.rs_and_COSM_id)
+
+# map three-letter amino acid codes to one-letter codes
+strelka.calls <- FindReplace(data = strelka.calls, 	
+                                    Var = "hgvs_protein",	
+                                    replaceData = AA.replaces,	
+                                    from = "from",	
+                                    to = "to",	
+                                    exact = FALSE)	
+
+# filter out low impact variants
+strelka.calls <- filter(strelka.calls, strelka.calls$impact != "LOW")
+
+# filter out non protein coding biotypes
+strelka.calls <- filter(strelka.calls, strelka.calls$biotype %in% biotype.keeps)
+
+strelka.calls$combine = as.character(paste(
+  strelka.calls$tumor.id,
+  strelka.calls$type,
+  strelka.calls$chr,
+  strelka.calls$pos,
+  strelka.calls$ref,
+  strelka.calls$alt,
+  sep = "."
+))
+```
+
+## Get all variants
+
+Include variants that are identified in:
+  (i) VarScan + MuTect (snvs only)
+  (ii) VarScan + Strelka (snvs, indels)
+  (iii) MuTect + Strelka (snvs only)
+  (iv) all three
+  (v) unique to individual tools (*except strelka*, since it has an extraneously high number of variants)
+
+```{r}
+# retrieve specific overlaps
+calls.varscan_and_mutect_and_strelka <- intersect(intersect(unique(varScan.calls$combine), unique(mutect.snvs$combine)),
+                                                  unique(strelka.calls$combine)
+                                                  )
+calls.varscan_and_mutect_only <- intersect(unique(varScan.calls$combine), unique(mutect.snvs$combine))
+calls.varscan_and_strelka_only <- intersect(unique(varScan.calls$combine), unique(strelka.calls$combine))
+calls.mutect_and_strelka_only <- intersect(unique(mutect.snvs$ combine), unique(strelka.calls$combine))
+#calls.varscan_only
+#calls.mutect_only
+
+# now label the "union" table
+union.keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein", "combine",
+                 "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc")
+varscan.union <- varScan.calls[, union.keeps]
+mutect.union <- mutect.snvs[, union.keeps]
+strelka.union <- strelka.calls[, union.keeps]
+calls.union <- unique(rbind(varscan.union, mutect.union, strelka.union))
+
+# label by which datasets combine is present in
+
+# check if key is present in the individual datasets
+calls.union <- calls.union %>% mutate(datasets = ifelse(combine %in% varScan.calls$combine, "varscan", 
+                           ifelse(combine %in% strelka.calls$combine, "strelka", "mutect")))
+         
+# add more granular labelling
+calls.union <- calls.union %>% 
+  mutate(datasets = ifelse(combine %in% calls.varscan_and_mutect_only, "varscan, mutect", datasets))
+calls.union <- calls.union %>% 
+  mutate(datasets = ifelse(combine %in% calls.varscan_and_strelka_only, "varscan, strelka", datasets))
+calls.union <- calls.union %>% 
+  mutate(datasets = ifelse(combine %in% calls.mutect_and_strelka_only, "mutect, strelka", datasets))
+calls.union <- calls.union %>% 
+  mutate(datasets = ifelse(combine %in% calls.varscan_and_mutect_and_strelka, "varscan, mutect, strelka", datasets))
+calls.union <- unique(calls.union)
+
+to.merge <- c("normal.depth", "normal.var_reads", "normal.allele_freq", 
+              "tumor.depth", "tumor.var_reads", "tumor.allele_freq",
+              "effect", "impact", "biotype", "external_id", "combine")
+
+# add other fields depending on which tool
+varscan.calls.to.merge <- varScan.calls[, to.merge]
+strelka.calls.to.merge <- strelka.calls[, to.merge]
+mutect.calls.to.merge <- mutect.snvs[, to.merge]
+
+# now arbitrarily split up the calls into varscan-, mutect- and strelka- (in that order) annotatable:
+# we do not want to include any variants that are predicted by only 1 tool
+varscan.datasets <- c("varscan, strelka", 
+                      "varscan, mutect")
+mutect.datasets <- c("mutect, strelka")
+strelka.datasets <- c("varscan, mutect, strelka")
+
+calls.union.varscan.temp <- filter(calls.union, calls.union$datasets %in% varscan.datasets)
+calls.union.mutect.temp <- filter(calls.union, calls.union$datasets %in% mutect.datasets)
+calls.union.strelka.temp <- filter(calls.union, calls.union$datasets %in% strelka.datasets)
+
+# now add annotation to individual datasets and combine again
+calls.all.varscan <- merge(calls.union.varscan.temp, varscan.calls.to.merge, by = "combine")
+calls.all.mutect <- merge(calls.union.mutect.temp, mutect.calls.to.merge, by = "combine")
+calls.all.strelka <- merge(calls.union.strelka.temp, strelka.calls.to.merge, by = "combine")
+
+calls.all <- rbind(calls.all.varscan, calls.all.mutect, calls.all.strelka)
+calls.all$combine <- NULL
+
+# merge meta data with variant calls
+calls.all <- merge(calls.all, sample.data, by = "tumor.id", all.x = TRUE)
+
+# sort the calls by case, chr, then position	
+calls.all <- unique(arrange(calls.all, tumor.id, chr, pos))
+
+# filters to reduce duplicate variants (HGVS_protein and removal of sequence feature effects)
+effects.exclude.more <- c("structural_interaction_variant", "sequence_feature")
+calls.all <- filter(calls.all, !(calls.all$effect %in% effects.exclude.more))
+calls.all$hgvs_cdna <- NULL
+calls.all$hgvs_protein <- NULL
+calls.all <- unique(calls.all)
+
+# write out the calls for downstream interpretation
+write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+```
+
+## ##########################################
+## Get overlap between exome and target data
+## ##########################################
+
+```{r}
+# final variant calls
+exome.calls <- read.table("/Volumes/shung/projects/gzl_exomes/snv_analysis-20181127/snv_indel_datasets/snvs_indels.30_final.default_and_optimized.txt", sep = "\t", header = TRUE, fill = TRUE)
+target.calls <- read.table("/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka-minus_temp_excludes.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+# case id mappings
+exome.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/exome.id_mappings.txt", sep = "\t", header = TRUE)
+target.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/target.id_mappings.txt", sep = "\t", header = TRUE)
+
+# gene panel
+genes.panel <- read.table("/Volumes/shung/projects/gzl_exomes/data/target_panel_Agilent_genes.txt", header=FALSE)
+genes.panel <- as.vector(genes.panel$V1)
+
+# map tumor id to case id so that patients ids are comparable between datasets
+exome.calls <- merge(exome.calls, exome.id_mappings, by = "tumor_id")
+target.calls <- merge(target.calls, target.id_mappings, by = "tumor.id")
+
+# extract columns of interest
+exome.keeps <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt", "evidence", 
+                 "var_reads_tumor", "allele_freq_tumor", "external_id")
+target.keeps <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt", "datasets", 
+                  "tumor.var_reads", "tumor.allele_freq", "external_id")
+exome.calls <- exome.calls[, exome.keeps]
+target.calls <- target.calls[, target.keeps]
+
+# rename columns to be for generating overlap datatset
+colnames(exome.calls) <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt", "exome.evidence", 
+                           "exome.tumor.var_reads", "exome.tumor.allele_freq", "exome.external_id")
+colnames(target.calls) <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt", "target.evidence", 
+                            "target.tumor.var_reads", "target.tumor.allele_freq", "target.external_id")
+
+# filter datasets so they are comparable at the gene level and patient level
+exome.calls <- filter(exome.calls, exome.calls$gene %in% genes.panel)
+exome.calls <- filter(exome.calls, exome.calls$case_id %in% unique(target.calls$case_id))
+target.calls <- unique(filter(target.calls, target.calls$case_id %in% unique(exome.calls$case_id)))
+
+# create a "union" table
+union.keeps <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt")
+exome.union <- exome.calls[, union.keeps]
+target.union <- target.calls[, union.keeps]
+all.union <- unique(rbind(exome.union, target.union))
+
+# create a "key" for comparison of mutations
+exome.calls$combine = as.character(paste(
+  exome.calls$case_id,
+  exome.calls$type,
+  exome.calls$chr,
+  exome.calls$pos,
+  exome.calls$ref,
+  exome.calls$alt,
+  sep = "."
+))
+
+target.calls$combine = as.character(paste(
+  target.calls$case_id,
+  target.calls$type,
+  target.calls$chr,
+  target.calls$pos,
+  target.calls$ref,
+  target.calls$alt,
+  sep = "."
+))
+
+all.union$combine = as.character(paste(
+  all.union$case_id,
+  all.union$type,
+  all.union$chr,
+  all.union$pos,
+  all.union$ref,
+  all.union$alt,
+  sep = "."
+))
+
+# retrieve specific overlaps
+calls.exome_and_target <- intersect(unique(exome.calls$combine), unique(target.calls$combine))
+
+# label by which datasets combine is present in
+all.union <- all.union %>% mutate(source = ifelse(combine %in% exome.calls$combine, "exome", "target"))
+# add more granular labelling
+all.union <- all.union %>%
+  mutate(source = ifelse(combine %in% calls.exome_and_target, "exome + target", source))
+all.union <- unique(all.union)
+
+# add extra columns that are specific to each dataset
+exome.to_merge <- c("combine", "exome.evidence", "exome.tumor.var_reads", "exome.tumor.allele_freq", "exome.external_id")
+exome.calls.to_merge <- exome.calls[, exome.to_merge]
+target.to_merge <- c("combine", "target.evidence", "target.tumor.var_reads", "target.tumor.allele_freq", "target.external_id")
+target.calls.to_merge <- target.calls[, target.to_merge]
+
+# now add annotation
+all.union <- merge(all.union, exome.calls.to_merge, by = "combine", all.x = TRUE)
+all.union <- merge(all.union, target.calls.to_merge, by = "combine", all.x = TRUE)
+all.union$combine <- NULL
+
+# sort the calls by case, chr, then position	
+all.union <- unique(arrange(all.union, case_id, chr, pos))
+
+# write out the calls for downstream interpretation
+write.table(all.union, "/Volumes/shung/projects/gzl_targeted/comparison_to_WES/calls-WES_vs_targeted.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+```
+
+## Preliminary visual analysis
+
+```{r}
+library(ggplot2)
+```
+
+# plot numbers of mutations by gene (sorted by number of mutations)
+
+```{r}
+# remove genes that are not mutated
+calls.all$gene <- factor(calls.all$gene)
+
+# sort by decreasing number of mutations per gene
+calls.all <- within(calls.all, gene <- factor(gene, levels=names(sort(table(gene), decreasing=FALSE))))
+
+# plot
+g <- ggplot(calls.all, aes(gene))
+g <- g + geom_bar(position = position_stack(reverse = TRUE)) +
+  coord_flip() +
+  theme(legend.position = "bottom") +
+  theme(axis.text.y = element_text(face = "italic"))
+```
+
+# plot numbers of mutations by effect (sorted by number of mutations)
+
+```{r}
+# remove effects that no longer correspond to mutations
+calls.all$effect <- factor(calls.all$effect)
+
+# sort by decreasing number of mutations per effect
+calls.all <- within(calls.all, effect <- factor(effect, levels = names(sort(table(effect), decreasing = FALSE))))
+
+# plot
+g <- ggplot(calls.all, aes(effect)) + 
+  geom_bar(position = position_stack(reverse = TRUE)) +
+  coord_flip() +
+  theme(legend.position = "bottom") + 
+  xlab("") + ylab("Number of mutations")
+
+```
+
+# show recurrent genes (proportion of cases mutated per gene)
+
+```{r}
+NUM_CASES = length(unique(calls.all$tumor.id))
+
+# get absolute number of mutated cases
+calls.unique_by_case <- unique(calls.all[c("tumor.id", "gene")])
+gene.num_cases_mutated <- as.data.frame(table(calls.unique_by_case$gene))
+
+# calculate proportion based on number of cases
+gene.num_cases_mutated$proportion <- gene.num_cases_mutated$Freq / NUM_CASES * 100
+
+colnames(gene.num_cases_mutated) <- c("gene", "freq", "proportion")
+
+# reorder genes by increasing frequency
+gene.num_cases_mutated$gene <- factor(gene.num_cases_mutated$gene, 
+                                       levels = gene.num_cases_mutated$gene[order(gene.num_cases_mutated$proportion)])
+
+p <- ggplot(data=gene.num_cases_mutated, aes(x = gene, y = proportion)) +
+  geom_bar(stat="identity", position=position_dodge(), width = 0.8) +
+  ylab("Cases mutated (%)") + xlab("") +
+  theme_bw() +
+  coord_flip() +
+  theme(legend.position="bottom") +
+  theme(axis.text.y = element_text(face = "italic"))
+```
+
+## Analysis of panel genes - coverage etc.
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+
+# read in coverage data
+coverage <- read.table("/Volumes/shung/projects/gzl_targeted/pilot/metrics/all.interval_hs_metrics.txt", sep = "\t", header = TRUE)
+failures <- c("GZ-205-Macro-FFPEbis")
+coverage <- filter(coverage, !(coverage$sampleID %in% failures))
+coverage$sampleID <- factor(coverage$sampleID)
+
+# get mean coverage for each probe
+coverage.mean_gene <- t(acast(coverage, sampleID ~ name, fun.aggregate = mean, value.var = "mean_coverage"))
+write.table(coverage.mean_gene, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/coverage-mean_per_gene.txt", sep = "\t", quote = FALSE)
+
+# get mean coverage for each gene
+# first create a "probe name"
+coverage$probe <- paste(coverage$chrom, coverage$start, coverage$end, sep = ".")
+coverage.mean_probe <- t(acast(coverage, sampleID ~ probe, fun.aggregate = mean, value.var = "mean_coverage"))
+write.table(coverage.mean_probe, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/coverage-mean_per_probe.txt", sep = "\t", quote = FALSE)
+
+# find low coverage probes
+coverage.mean_probe.df <- as.data.frame(coverage.mean_probe)
+coverage.mean_probe.df$sum <- rowSums(coverage.mean_probe.df[,colnames(coverage.mean_probe.df)])
+CUTOFF = 500*12
+coverage.mean_probe.low <- subset(coverage.mean_probe.df, coverage.mean_probe.df$sum < CUTOFF)
+write.table(coverage.mean_probe.low, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/low_coverage_probes.500X_cutoff.txt", quote = FALSE)
+
+# gene-level coverage
+p0 <- ggplot(coverage, aes(name, mean_coverage)) + 
+  geom_boxplot() +
+  xlab ("") + ylab("Mean coverage") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
+p1 <- ggplot(coverage, aes(name, mean_coverage)) + 
+  geom_boxplot() +
+  xlab ("") + ylab("Mean coverage") +
+  ylim(0, 2000) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
+p2 <- ggplot(coverage, aes(name, mean_coverage)) + 
+  geom_boxplot() +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
+
+grid.arrange(p0, p1, p2, ncol = 1)
+
+# faceted by gene
+# split into subsets of genes
+genes.gp1 <- c("ABCA13", "ABCC6", "ABCD2", "ACTB", "ADAP1", "AKAP6", "AMOT", "ARHGAP29", "ARID1A", "ARID5B", "ASCC3", "ASXL2", "ATM", "ATP13A4", "B2M", "BARX2", "BCL2", "BCL7A", "BIRC6", "BRPF1", "BRWD3", "BTG1", "C2CD3", "CARD11", "CCND3", "CD274", "CD58", "CD70", "CD79B", "CD83", "CIITA", "CISH", "COL13A1", "COL24A1", "CREBBP", "CSF2RB", "CSMD3", "CTNND2", "CXCR5", "DDX3X", "DDX60", "DHX58", "DIAPH3", "DSC2", "DUSP2", "DYNC1H1", "EBF1", "EEF1A1", "EGR1", "EHMT2", "EMD", "EP300", "EPHA7", "ETS1")
+
+genes.gp2 <- c("ETV6", "EZH2", "FADD", "FAS", "FBXO38", "FLT4", "FOXO1", "FPGT", "GCNT4", "GCSAM", "GNA13", "GPR137C", "GRIA4", "GRIN3A", "HCFC1", "HDAC4", "HEXIM1", "HIST1H1B", "HIST1H1C", "HIST1H1D", "HIST1H1E", "HIST1H2BC", "HIST1H3B", "HIST1H3D", "HIST1H4C", "HIST1H4E", "HIST1H4H", "HIST1H4J", "HLA-B", "IFNL3", "IKBKB", "IKZF3", "IL13RA1", "IL1RAPL2", "IL4R", "INPP5D", "IRF2BP2", "IRF4", "IRF8", "ITPKB", "JAK1", "JUNB", "KCNQ3", "KLF2", "KMT2A", "KMT2C", "KMT2D", "LAMB1", "LMF2", "LMTK2", "LRRN3", "LTB", "LTBP3", "MAF")
+
+genes.gp3 <- c("MAGEC2", "MAP2K1", "MAPK6", "MCL1", "MEF2B", "MFHAS1", "MPDZ", "MS4A1", "MSH6", "MYC", "MYD88", "NBPF6", "NCOR1", "NCOR2", "NEK1", "NF1", "NFATC3", "NFKB2", "NFKBIA", "NFKBIB", "NFKBIE", "NFKBIZ", "NLRP4", "NONO", "NOTCH1", "NOTCH2", "NSD1", "NUP214", "P2RY8", "PCBP1", "PDCD1LG2", "PIK3C2G", "PIM1", "PIM2", "PLXND1", "POM121L12", "POU2AF1", "POU2F2", "POU4F3", "PRDM16", "PRDM9", "PRKDC", "PRUNE2", "PTBP1", "PTEN", "PTPN1", "PTPN6", "PTPRN2", "RC3H2", "RELB", "RELN", "RGS1", "RHOA", "RIBC2")
+
+genes.gp4 <- c("RNF217", "SEMA3E", "SETD1B", "SETD2", "SETD5", "SETDB1", "SGK1", "SGPP1", "SHCBP1", "SHISA6", "SIAH2", "SLC6A3", "SOCS1", "SPEN", "SPOP", "SPSB4", "SRSF1", "SRSF2", "STAT3", "STAT5B", "STAT6", "TAB1", "TAF1", "TBC1D4", "TBL1XR1", "TCF3", "TET2", "THRA", "TIGD3", "TMEM30A", "TMSB4X", "TNFAIP3", "TNFAIP8L3", "TNFRSF14", "TNIP1", "TOPBP1", "TP53", "TP53BP1", "TRAF1", "TRAF2", "TRAF3", "TRPS1", "UBE2A", "USP5", "VMP1", "WDFY3", "WEE1", "XBP1", "XCR1", "XPO1", "YY1", "ZEB2", "ZFP36L1", "ZNF217", "ZNF423")
+
+coverage.gp1 <- filter(coverage, coverage$name %in% genes.gp1)
+coverage.gp2 <- filter(coverage, coverage$name %in% genes.gp2)
+coverage.gp3 <- filter(coverage, coverage$name %in% genes.gp3)
+coverage.gp4 <- filter(coverage, coverage$name %in% genes.gp4)
+
+p.gp1 <- ggplot(coverage.gp1, aes(x = sampleID, y = mean_coverage)) + 
+  geom_boxplot(alpha = 0.7) +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
+p.gp1 + facet_grid(name ~ .)
+
+p.gp2 <- ggplot(coverage.gp2, aes(x = sampleID, y = mean_coverage)) + 
+  geom_boxplot(alpha = 0.7) +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
+p.gp2 + facet_grid(name ~ .)
+
+p.gp3 <- ggplot(coverage.gp3, aes(x = sampleID, y = mean_coverage)) + 
+  geom_boxplot(alpha = 0.7) +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
+p.gp3 + facet_grid(name ~ .)
+
+p.gp4 <- ggplot(coverage.gp4, aes(x = sampleID, y = mean_coverage)) + 
+  geom_boxplot(alpha = 0.7) +
+  xlab ("") + ylab("Mean coverage") +
+  scale_y_continuous(trans = 'log2') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
+p.gp4 + facet_grid(name ~ .)
+
+# sample-level coverage
+p3 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
+  geom_boxplot() +
+  xlab ("") + ylab("Mean coverage") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
+p4 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
+  geom_boxplot() +
+  ylim(0, 2000) +
+  xlab ("") + ylab("Mean coverage") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
+p5 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
+  geom_boxplot() +
+  scale_y_continuous(trans = 'log2') +
+  xlab ("") + ylab("Mean coverage") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
+
+grid.arrange(p3, p4, p5, ncol = 1)
+
+# distribution of coverage
+
+d1 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
+    geom_density() +
+    xlab("Mean coverage") + ylab("Density") +
+    xlim(0, 2000)
+d2 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
+    geom_density() +
+    xlab("Mean coverage") + ylab("Density") +
+    xlim(0, 500)
+d3 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
+    geom_density() +
+    xlab("Mean coverage") + ylab("Density") +
+    xlim(0, 200)
+grid.arrange(d1, d2, d3, ncol=1)
+#geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
+#ylim(0, max_y_intercept+0.25*max_y_intercept) +
+#theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
+
+```
