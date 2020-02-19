@@ -34,17 +34,17 @@ library(ggplot2)
 ```{r}
 # read in gold standard calls (i.e. from the exome) and map ids
 gold.data <- read.table("/Volumes/shung/projects/gzl_exomes/snv_analysis-20181127/snv_indel_datasets/snvs_indels.full_cohort_minus_GZ229.default_and_optimized.FINAL_DATASET.txt", sep = "\t", header = TRUE, fill = TRUE)
-exome.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/exome.id_mappings.txt", sep = "\t", header = TRUE)
+exome.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/data/exome.id_mappings.txt", sep = "\t", header = TRUE)
 gold.data <- merge(gold.data, exome.id_mappings, by = "tumor_id")
 
 # read in calls that need to be assessed (start with frozen tumor samples) and map ids
 calls.ffpe <- read.table("/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka.txt", sep = "\t", header = TRUE, fill = TRUE)
-target.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/target.id_mappings.txt", sep = "\t", header = TRUE)
+target.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/data/target.id_mappings.txt", sep = "\t", header = TRUE)
 calls.ffpe <- merge(calls.ffpe, target.id_mappings, by = "tumor.id")
 
 # filter "gold data" for samples of interest (frozen tumors)
-samples.frozen <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/frozen_samples.txt", header = FALSE)
-samples.ffpe <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/ffpe_samples.txt", header = FALSE)
+#samples.frozen <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/samples.frozen.txt", header = FALSE)
+samples.ffpe <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/samples.ffpe.txt", header = FALSE)
 gold.data <- filter(gold.data, gold.data$case_id %in% samples.ffpe$V1)
 calls.ffpe <- filter(calls.ffpe, calls.ffpe$case_id %in% samples.ffpe$V1)
 
@@ -84,8 +84,51 @@ calls.ffpe$key <- as.character(paste(
   sep = "."
 ))
 
-write.table(gold.data, "/Volumes/shung/projects/gzl_targeted/roc_analysis/data/gold.data.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(gold.data, "/Volumes/shung/projects/gzl_targeted/roc_analysis/data/gold.data.ffpe.txt", sep = "\t", quote = FALSE, row.names = FALSE)
 write.table(calls.ffpe, "/Volumes/shung/projects/gzl_targeted/roc_analysis/data/calls.ffpe.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
+
+## Read in filtered datasets based on variants that occur in intersecting bait (between target and exome)
+
+```{r}
+# handle gold standard data first
+gold.data <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/gold.data.ffpe.txt", sep = "\t", header = TRUE)
+gold.data.intersect <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/gold.ffpe.intersect_both_bait_sets.bed", sep = "\t", header = FALSE)
+  
+gold.data$key <- as.character(paste(
+  gold.data$chr,
+  gold.data$pos,
+  sep = "."
+))
+gold.data.intersect$V3 <- NULL
+colnames(gold.data.intersect) <- c("chr", "pos")
+gold.data.intersect$key <- as.character(paste(
+  gold.data.intersect$chr,
+  gold.data.intersect$pos,
+  sep = "."
+))
+overlapping_keys <- intersect(unique(gold.data$key), unique(gold.data.intersect$key))
+gold.data <- unique(filter(gold.data, gold.data$key %in% overlapping_keys))
+
+# now handle the comparator calls
+calls.ffpe <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/calls.ffpe.txt", sep = "\t", header = TRUE)
+calls.ffpe.intersect <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/calls.ffpe.intersect_both_bait_sets.bed", sep = "\t", header = FALSE)
+
+calls.ffpe$key <- as.character(paste(
+  calls.ffpe$chr,
+  calls.ffpe$pos,
+  sep = "."
+))
+calls.ffpe.intersect$V3 <- NULL
+colnames(calls.ffpe.intersect) <- c("chr", "pos")
+calls.ffpe.intersect$key <- as.character(paste(
+  calls.ffpe.intersect$chr,
+  calls.ffpe.intersect$pos,
+  sep = "."
+))
+overlapping_keys <- intersect(unique(calls.ffpe$key), unique(calls.ffpe.intersect$key))
+calls.ffpe <- unique(filter(calls.ffpe, calls.ffpe$key %in% overlapping_keys))
 
 ```
 
@@ -148,7 +191,7 @@ ROC.data$FPR <- (1 - (ROC.data$TN / (ROC.data$TN + ROC.data$FP)))*100
 # TPR = TP / ( TP + FN )
 ROC.data$TPR <- (ROC.data$TP / (ROC.data$TP + ROC.data$FN))*100
 
-write.table(ROC.data, "/Volumes/shung/projects/gzl_targeted/roc_analysis/ROC_results-FFPE-tumor_VAF_and_tumor_var_reads.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(ROC.data, "/Volumes/shung/projects/gzl_targeted/roc_analysis/results/ROC_results-FFPE-tumor_VAF_and_tumor_var_reads.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ```{r}

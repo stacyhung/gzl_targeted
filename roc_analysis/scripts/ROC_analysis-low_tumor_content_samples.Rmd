@@ -88,6 +88,49 @@ write.table(calls.lowTC, "/Volumes/shung/projects/gzl_targeted/roc_analysis/data
 
 ```
 
+## Read in filtered datasets based on variants that occur in intersecting bait (between target and exome)
+
+```{r}
+# handle gold standard data first
+gold.data <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/gold.data.lowTC.txt", sep = "\t", header = TRUE)
+gold.data.intersect <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/gold.lowTC.intersect_both_bait_sets.bed", sep = "\t", header = FALSE)
+  
+gold.data$key <- as.character(paste(
+  gold.data$chr,
+  gold.data$pos,
+  sep = "."
+))
+gold.data.intersect$V3 <- NULL
+colnames(gold.data.intersect) <- c("chr", "pos")
+gold.data.intersect$key <- as.character(paste(
+  gold.data.intersect$chr,
+  gold.data.intersect$pos,
+  sep = "."
+))
+overlapping_keys <- intersect(unique(gold.data$key), unique(gold.data.intersect$key))
+gold.data <- unique(filter(gold.data, gold.data$key %in% overlapping_keys))
+
+# now handle the comparator calls
+calls.lowTC <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/calls.lowTC.txt", sep = "\t", header = TRUE)
+calls.lowTC.intersect <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/calls.lowTC.intersect_both_bait_sets.bed", sep = "\t", header = FALSE)
+
+calls.lowTC$key <- as.character(paste(
+  calls.lowTC$chr,
+  calls.lowTC$pos,
+  sep = "."
+))
+calls.lowTC.intersect$V3 <- NULL
+colnames(calls.lowTC.intersect) <- c("chr", "pos")
+calls.lowTC.intersect$key <- as.character(paste(
+  calls.lowTC.intersect$chr,
+  calls.lowTC.intersect$pos,
+  sep = "."
+))
+overlapping_keys <- intersect(unique(calls.lowTC$key), unique(calls.lowTC.intersect$key))
+calls.lowTC <- unique(filter(calls.lowTC, calls.lowTC$key %in% overlapping_keys))
+
+```
+
 ## Perform the ROC analysis
 
 ```{r}
@@ -150,7 +193,7 @@ ROC.data$FPR <- (1 - (ROC.data$TN / (ROC.data$TN + ROC.data$FP)))*100
 # TPR = TP / ( TP + FN )
 ROC.data$TPR <- (ROC.data$TP / (ROC.data$TP + ROC.data$FN))*100
 
-write.table(ROC.data, "/Volumes/shung/projects/gzl_targeted/roc_analysis/ROC_results-lowTC-tumor_VAF_and_tumor_var_reads.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(ROC.data, "/Volumes/shung/projects/gzl_targeted/roc_analysis/results/ROC_results-lowTC-tumor_VAF_and_tumor_var_reads.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ```{r}

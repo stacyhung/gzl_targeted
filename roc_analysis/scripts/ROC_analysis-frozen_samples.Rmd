@@ -34,17 +34,20 @@ library(ggplot2)
 ```{r}
 # read in gold standard calls (i.e. from the exome) and map ids
 gold.data <- read.table("/Volumes/shung/projects/gzl_exomes/snv_analysis-20181127/snv_indel_datasets/snvs_indels.full_cohort_minus_GZ229.default_and_optimized.FINAL_DATASET.txt", sep = "\t", header = TRUE, fill = TRUE)
-exome.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/exome.id_mappings.txt", sep = "\t", header = TRUE)
+exome.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/data/exome.id_mappings.txt", sep = "\t", header = TRUE)
 gold.data <- merge(gold.data, exome.id_mappings, by = "tumor_id")
+
+# remove GZ-222 from gold standard dataset since it is the only sample that was paired to a pooled normal
+gold.data <- filter(gold.data, gold.data$case_id != "GZ-222")
 
 # read in calls that need to be assessed (start with frozen tumor samples) and map ids
 calls.frozen <- read.table("/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka.txt", sep = "\t", header = TRUE, fill = TRUE)
-target.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/target.id_mappings.txt", sep = "\t", header = TRUE)
+target.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/data/target.id_mappings.txt", sep = "\t", header = TRUE)
 calls.frozen <- merge(calls.frozen, target.id_mappings, by = "tumor.id")
 
 # filter "gold data" for samples of interest (frozen tumors)
-samples.frozen <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/frozen_samples.txt", header = FALSE)
-samples.ffpe <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/ffpe_samples.txt", header = FALSE)
+samples.frozen <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/samples.frozen.txt", header = FALSE)
+samples.ffpe <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/samples.ffpe.txt", header = FALSE)
 gold.data <- filter(gold.data, gold.data$case_id %in% samples.frozen$V1)
 calls.frozen <- filter(calls.frozen, calls.frozen$case_id %in% samples.frozen$V1)
 
@@ -89,6 +92,48 @@ write.table(calls.frozen, "/Volumes/shung/projects/gzl_targeted/roc_analysis/dat
 
 ```
 
+## Read in filtered datasets based on variants that occur in intersecting bait (between target and exome)
+
+```{r}
+# handle gold standard data first
+gold.data <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/gold.data.txt", sep = "\t", header = TRUE)
+gold.data.intersect <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/gold.data.intersect_both_bait_sets.bed", sep = "\t", header = FALSE)
+  
+gold.data$key <- as.character(paste(
+  gold.data$chr,
+  gold.data$pos,
+  sep = "."
+))
+gold.data.intersect$V3 <- NULL
+colnames(gold.data.intersect) <- c("chr", "pos")
+gold.data.intersect$key <- as.character(paste(
+  gold.data.intersect$chr,
+  gold.data.intersect$pos,
+  sep = "."
+))
+overlapping_keys <- intersect(unique(gold.data$key), unique(gold.data.intersect$key))
+gold.data <- unique(filter(gold.data, gold.data$key %in% overlapping_keys))
+
+# now handle the comparator calls
+calls.frozen <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/calls.frozen.txt", sep = "\t", header = TRUE)
+calls.frozen.intersect <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/calls.frozen.intersect_both_bait_sets.bed", sep = "\t", header = FALSE)
+
+calls.frozen$key <- as.character(paste(
+  calls.frozen$chr,
+  calls.frozen$pos,
+  sep = "."
+))
+calls.frozen.intersect$V3 <- NULL
+colnames(calls.frozen.intersect) <- c("chr", "pos")
+calls.frozen.intersect$key <- as.character(paste(
+  calls.frozen.intersect$chr,
+  calls.frozen.intersect$pos,
+  sep = "."
+))
+overlapping_keys <- intersect(unique(calls.frozen$key), unique(calls.frozen.intersect$key))
+calls.frozen <- unique(filter(calls.frozen, calls.frozen$key %in% overlapping_keys))
+
+```
 ## Perform the ROC analysis
 
 ```{r}
@@ -148,7 +193,7 @@ ROC.data$FPR <- (1 - (ROC.data$TN / (ROC.data$TN + ROC.data$FP)))*100
 # TPR = TP / ( TP + FN )
 ROC.data$TPR <- (ROC.data$TP / (ROC.data$TP + ROC.data$FN))*100
 
-write.table(ROC.data, "/Volumes/shung/projects/gzl_targeted/roc_analysis/ROC_results-tumor_VAF_and_tumor_var_reads.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(ROC.data, "/Volumes/shung/projects/gzl_targeted/roc_analysis/results/ROC_results-frozen-tumor_VAF_and_tumor_var_reads.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
 ```{r}
@@ -419,4 +464,3 @@ p <- ggplot(summary.table, aes(x=sample, y=num_mutations, fill = dataset)) +
 
 
 ```
-
