@@ -67,7 +67,7 @@ MAX_VAR_READS_NORMAL = 2;
 normals.pooled <- c("pooledN1", "pooledN2")
 
 # define "tumor" samples that should be analyzed
-samples <- read.table("/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/sample_pairs.txt", sep = "\t", header = FALSE)
+samples <- read.table("/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/data/sample_pairs.txt", sep = "\t", header = FALSE)
 tumors <- unique(samples$V1)
 normals <- unique(samples$V2)
 ```
@@ -688,6 +688,11 @@ write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analy
 ## Preparing for germline filtering
 
 ```{r}
+library(dplyr)
+
+# to avoid having to re-run everything, just load the last version of the integrated calls
+calls.all <- read.table("/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/calls.all.txt", sep = "\t", header = TRUE)
+
 pooled_analyses <- c("tumor_v_pooledN", "normal_v_pooledN")
 
 # extract calls where "tumor" has been paired against a pooled N and matched N
@@ -736,6 +741,7 @@ calls.all.rsid_filtered <- rbind(calls.v_matchedN, calls.v_pooledN.rsid_filtered
 calls.all <- calls.all.rsid_filtered
 ```
 
+
 ## Second layer of combining - create union of calls, and column "analysis" indicating in which paired analyses, the variant appears in (e.g. "tumor vs. normal, tumor vs. pooledN")
 
 ```{r}
@@ -743,12 +749,51 @@ calls.T_v_N <- filter(calls.all, calls.all$analysis == "tumor_v_normal")
 calls.T_v_pooledN <- filter(calls.all, calls.all$analysis == "tumor_v_pooledN")   
 calls.N_v_pooledN <- filter(calls.all, calls.all$analysis == "normal_v_pooledN")
 
+#################################################################################
+# for normal vs. pooledN variants, we need to change the "tumor id" so that the variants can be compared at the case level
+
+calls.N_v_pooledN$tumor.id <- gsub("-C", "", calls.N_v_pooledN$tumor.id) # e.g. for normals like "BCC53-C"
+calls.N_v_pooledN$pair <- gsub("-C", "", calls.N_v_pooledN$pair)
+
+calls.N_v_pooledN$tumor.id <- gsub("C$", "", calls.N_v_pooledN$tumor.id) # e.g. for normals like "GZ184C"
+calls.N_v_pooledN$pair <- gsub("C_", "_", calls.N_v_pooledN$pair)
+
+# map BM1803125 to BCC25 (case id)
+calls.N_v_pooledN$tumor.id <- gsub("BM1803125", "BCC25", calls.N_v_pooledN$tumor.id)
+calls.N_v_pooledN$pair <- gsub("BM1803125", "BCC25", calls.N_v_pooledN$pair)
+
+# update ids missing a dash (in normal - e.g. GZ180) (since all case ids have a dash - e.g. GZ-180)
+calls.N_v_pooledN$tumor.id <- gsub("GZ086", "GZ-086", calls.N_v_pooledN$tumor.id)
+calls.N_v_pooledN$tumor.id <- gsub("GZ092", "GZ-092", calls.N_v_pooledN$tumor.id)
+calls.N_v_pooledN$tumor.id <- gsub("GZ149", "GZ-149", calls.N_v_pooledN$tumor.id)
+calls.N_v_pooledN$tumor.id <- gsub("GZ180", "GZ-180", calls.N_v_pooledN$tumor.id)
+calls.N_v_pooledN$tumor.id <- gsub("GZ184", "GZ-184", calls.N_v_pooledN$tumor.id)
+
+calls.N_v_pooledN$pair <- gsub("GZ086", "GZ-086", calls.N_v_pooledN$pair)
+calls.N_v_pooledN$pair <- gsub("GZ092", "GZ-092", calls.N_v_pooledN$pair)
+calls.N_v_pooledN$pair <- gsub("GZ149", "GZ-149", calls.N_v_pooledN$pair)
+calls.N_v_pooledN$pair <- gsub("GZ180", "GZ-180", calls.N_v_pooledN$pair)
+calls.N_v_pooledN$pair <- gsub("GZ184", "GZ-184", calls.N_v_pooledN$pair)
+
+# recreate "combine" key for normal vs. pooled normal variants
+calls.N_v_pooledN$combine = as.character(paste(
+  calls.N_v_pooledN$tumor.id,
+  calls.N_v_pooledN$type,
+  calls.N_v_pooledN$chr,
+  calls.N_v_pooledN$pos,
+  calls.N_v_pooledN$ref,
+  calls.N_v_pooledN$alt,
+  sep = "."
+))
+
+#################################################################################
+
 # retrieve specific overlaps
 combine.T_v_N.T_v_pooledN.N_v_pooledN <- intersect(intersect(unique(calls.T_v_N$combine), unique(calls.T_v_pooledN$combine)),
                                                  unique(calls.N_v_pooledN)) # 0 
-combine.T_v_N.T_v_pooledN <- intersect(unique(calls.T_v_N$combine), unique(calls.T_v_pooledN$combine)) # 0
-combine.T_v_N.N_v_pooledN <- intersect(unique(calls.T_v_N$combine), unique(calls.N_v_pooledN$combine)) # 1133
-combine.T_v_pooledN.N_v_pooledN <- intersect(unique(calls.T_v_pooledN$combine), unique(calls.N_v_pooledN$combine)) # 0
+combine.T_v_N.T_v_pooledN <- intersect(unique(calls.T_v_N$combine), unique(calls.T_v_pooledN$combine)) # 1133
+combine.T_v_N.N_v_pooledN <- intersect(unique(calls.T_v_N$combine), unique(calls.N_v_pooledN$combine)) # 0
+combine.T_v_pooledN.N_v_pooledN <- intersect(unique(calls.T_v_pooledN$combine), unique(calls.N_v_pooledN$combine)) # 186
 
 # create the union table
 union.keeps <- c("tumor.id", "type", "chr", "pos", "gene", "ref", "alt", "datasets", "combine")
@@ -783,7 +828,7 @@ calls.T_v_pooledN.to_merge <- unique(calls.T_v_pooledN[, to.merge])
 calls.N_v_pooledN.to_merge <- unique(calls.N_v_pooledN[, to.merge])
 
 calls.T_v_N.analyses <- c("T vs N", "T vs N, T vs pooledN")
-calls.T_v_pooledN.analyses <- c("T vs pooledN")
+calls.T_v_pooledN.analyses <- c("T vs pooledN", "T vs pooledN, N vs pooledN")
 calls.N_v_pooledN.analyses <- c("N vs pooledN")
 
 calls.union.T_v_N.temp <- filter(calls.union, calls.union$analyses %in% calls.T_v_N.analyses)
@@ -797,12 +842,15 @@ calls.all.N_v_pooledN <- merge(calls.union.N_v_pooledN.temp, calls.N_v_pooledN.t
 
 calls.union <- rbind(calls.all.T_v_N, calls.all.T_v_pooledN, calls.all.N_v_pooledN)
 
+# remove "datasets" columns since for some variants found by multiple analyses, the evidences are different
+calls.union$datasets <- NULL
+
 # sort the calls by case, chr, then position	
 calls.union <- unique(arrange(calls.union, tumor.id, chr, pos))
 
-#write.table(calls.union, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/calls.union.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(calls.union, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/calls.union.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 #write.table(calls.union, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/calls.union.germline_VAF_filtered.txt", sep = "\t", row.names = FALSE, quote = FALSE)
-write.table(calls.union, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/calls.union.germline_VAF_and_rsid_filtered.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+#write.table(calls.union, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/calls.union.germline_VAF_and_rsid_filtered.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 
 ```
 
@@ -811,7 +859,11 @@ write.table(calls.union, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_ana
 ## ###############
 ```{r}
 library(ggplot2)
+```
 
+# Look at distributions of VAF for each type of analysis
+
+```{r}
 # temporarily remove "noisy" variants (VAF < 5%)
 calls.union.rsid_and_germline_VAF_filtered <- calls.union
 calls.union <- filter(calls.union, as.numeric(calls.union$tumor.allele_freq) > 5)
@@ -822,11 +874,34 @@ p.violin <- ggplot(calls.union,
   xlab("") +
   ylab("Tumor variant allele frequency (%)") +
   theme(legend.position="bottom") +
-  theme(legend.title = element_blank())
+  theme(legend.title = element_blank()) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
 
 ```
 
+## Barplot showing overlap across samples
 
+```{r}
+# order samples by the number of mutations
+num_mutations <- as.data.frame(table(calls.union$tumor.id))
+num_mutations <- num_mutations[order(num_mutations$Freq, num_mutations$Var),]
+num_mutations$Var1 <- factor(num_mutations$Var1)
+calls.union$tumor.id <- factor(calls.union$tumor.id, levels = rev(num_mutations$Var1))
+
+calls.union$analyses <- factor(calls.union$analyses, levels = c("T vs N", 
+                                                                "T vs N, T vs pooledN", 
+                                                                "T vs pooledN",
+                                                                "T vs pooledN, N vs pooledN",
+                                                                "N vs pooledN"))
+p.bar <- ggplot(calls.union, aes(tumor.id)) + 
+  geom_bar(aes(fill=analyses)) + 
+  xlab("") +
+  ylab("Number of mutations") +
+  theme(legend.title = element_blank()) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1)) +
+  scale_fill_manual(values = c("pink2","thistle3", "slategray3", "darkseagreen3", "palegreen2"))
+
+```
 
 
 
