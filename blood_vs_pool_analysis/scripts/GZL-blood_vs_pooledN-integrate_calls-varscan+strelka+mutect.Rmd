@@ -750,7 +750,8 @@ calls.v_pooled.germline_VAF.cosm_id.no_rsid <- filter(calls.v_pooled.germline_VA
                                                       !grepl("rs", calls.v_pooled.germline_VAF.cosm_id$external_id) )
 
 # now define the final set of calls (germline VAF filtered + germline VAF with COSMIC only ids)
-calls.all.germline_VAF_filtered.COSM_only_id <- rbind(calls.v_pooledN.germline_VAF_filtered,
+calls.all.germline_VAF_filtered.COSM_only_id <- rbind(calls.v_matchedN,
+                                                      calls.v_pooledN.germline_VAF_filtered,
                                                       calls.v_pooled.germline_VAF.cosm_id.no_rsid)
 calls.all <- calls.all.germline_VAF_filtered.COSM_only_id
 ```
@@ -918,6 +919,13 @@ calls.union <- filter(calls.union,
 calls.union <- filter(calls.union, as.numeric(calls.union$tumor.allele_freq) >= MIN_VAF)
 ```
 
+```{r}
+# write calls to output
+write.table(calls.union, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/calls.union/calls.union-ROC_thresholds+germline_VAF_40_to_60_filtered.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(calls.union, "/Volumes/shung/projects/gzl_targeted/blood_vs_pool_analysis/calls.union/calls.union-ROC_thresholds+germline_VAF_40_to_60_filtered+keep_COSM_id.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
+
 ## ###############
 ## Visualization #
 ## ###############
@@ -969,5 +977,37 @@ p.bar <- ggplot(calls.union, aes(tumor.id)) +
   theme(legend.title = element_blank()) +
   theme(axis.text.x = element_text(angle = 45, hjust=1)) +
   scale_fill_manual(values = c("pink2","thistle3", "slategray3", "darkseagreen3", "palegreen2"))
+
+```
+
+## Boxplot distribution of tumor VAF by gene for variants unique to T vs N (not found by T vs pooledN)
+
+```{r}
+calls.T_v_N.unique <- filter(calls.union, calls.union$analyses == "T vs N")
+
+p.box <- ggplot(calls.T_v_N.unique, 
+             aes(x=gene, y=as.numeric(tumor.allele_freq))) + 
+  geom_boxplot() +
+  xlab("") +
+  ylab("Tumor VAF (%)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+## Boxplot distribution of T vs. pooledN not filtered out by germline filters
+
+```{r}
+pooled_datasets <- c("T vs pooledN", "T vs pooledN, N vs pooledN")
+calls.T_v_pooledN.only <- filter(calls.union, calls.union$analyses %in% pooled_datasets)
+
+p.box <- ggplot(calls.T_v_pooledN.only, 
+             aes(x=gene, y=as.numeric(tumor.allele_freq))) + 
+  geom_boxplot() +
+  xlab("") +
+  ylab("Tumor VAF (%)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_jitter(position=position_jitter(0.2)) +
+  geom_hline(yintercept=40, linetype="dashed", color = "red")+
+  geom_hline(yintercept=60, linetype="dashed", color = "red")
 
 ```
