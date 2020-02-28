@@ -272,7 +272,7 @@ varScan.calls <- rbind(varScan.calls.not_pooledN, varScan.calls.pooledN.filtered
 # remove duplicates (e.g. due to multiple effects)
 varScan.calls <- unique(varScan.calls)	
 
-write.table(varScan.calls, "/Volumes/shung/projects/gzl_targeted/all_samples/varscan/varscan.calls.filtered.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+#write.table(varScan.calls, "/Volumes/shung/projects/gzl_targeted/all_samples/varscan/varscan.calls.filtered.txt", sep = "\t", quote = FALSE, row.names = FALSE)
 	
 varScan.calls$combine = as.character(paste(	
   varScan.calls$tumor.id, 	
@@ -813,7 +813,8 @@ calls.union <- calls.union %>%
 calls.union <- unique(calls.union)
 
 to.merge <- c("normal.depth", "normal.var_reads", "normal.allele_freq", 
-              "tumor.depth", "tumor.var_reads", "tumor.allele_freq",
+              "tumor.depth", "tumor.var_reads", "tumor.allele_freq", 
+              "hgvs_cdna", "hgvs_protein",
               "effect", "impact", "biotype", "external_id", "combine")
 
 # add other fields depending on which tool
@@ -847,14 +848,22 @@ calls.all <- merge(calls.all, sample.data, by = "tumor.id", all.x = TRUE)
 calls.all <- unique(arrange(calls.all, tumor.id, chr, pos))
 
 # filters to reduce duplicate variants (HGVS_protein and removal of sequence feature effects)
-effects.exclude.more <- c("structural_interaction_variant", "sequence_feature")
-calls.all <- filter(calls.all, !(calls.all$effect %in% effects.exclude.more))
-calls.all$hgvs_cdna <- NULL
-calls.all$hgvs_protein <- NULL
 calls.all <- unique(calls.all)
+
+# rename HGVS columns
+calls.all <- calls.all %>% dplyr::rename(hgvs_protein=hgvs_protein.y, hgvs_cdna=hgvs_cdna.y)
+calls.all$hgvs_cdna.x <- NULL
+calls.all$hgvs_protein.x <- NULL
 
 # write out the calls for downstream interpretation
 write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+# filter out UTR variants for "final" calls
+effects.exclude <- c("5_prime_UTR_variant", "3_prime_UTR_variant")
+calls.all <- filter(calls.all, !(calls.all$effect %in% effects.exclude))
+
+write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka.no_UTRs.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
 ```
 
 ## ##########################################
