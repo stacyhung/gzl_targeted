@@ -788,12 +788,12 @@ calls.mutect_and_strelka_only <- intersect(unique(mutect.snvs$ combine), unique(
 #calls.mutect_only
 
 # now label the "union" table
-union.keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "hgvs_cdna", "hgvs_protein", "combine",
-                 "LOF_gene", "LOF_geneid", "LOF_num_Tr", "LOF_perc")
+union.keeps <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt", "combine")
 varscan.union <- varScan.calls[, union.keeps]
 mutect.union <- mutect.snvs[, union.keeps]
-strelka.union <- strelka.calls[, union.keeps]
-calls.union <- unique(rbind(varscan.union, mutect.union, strelka.union))
+#strelka.union <- strelka.calls[, union.keeps]
+#calls.union <- unique(rbind(varscan.union, mutect.union, strelka.union))
+calls.union <- unique(rbind(varscan.union, mutect.union))
 
 # label by which datasets combine is present in
 
@@ -814,31 +814,33 @@ calls.union <- unique(calls.union)
 
 to.merge <- c("normal.depth", "normal.var_reads", "normal.allele_freq", 
               "tumor.depth", "tumor.var_reads", "tumor.allele_freq", 
-              "hgvs_cdna", "hgvs_protein",
-              "effect", "impact", "biotype", "external_id", "combine")
+              "hgvs_cdna", "hgvs_protein", "effect", "impact", 
+              "biotype", "feature_id", "external_id", "combine")
 
 # add other fields depending on which tool
 varscan.calls.to.merge <- varScan.calls[, to.merge]
-strelka.calls.to.merge <- strelka.calls[, to.merge]
 mutect.calls.to.merge <- mutect.snvs[, to.merge]
+#strelka.calls.to.merge <- strelka.calls[, to.merge]
 
 # now arbitrarily split up the calls into varscan-, mutect- and strelka- (in that order) annotatable:
 # we do not want to include any variants that are predicted by only 1 tool
 varscan.datasets <- c("varscan, strelka", 
-                      "varscan, mutect")
+                      "varscan, mutect",
+                      "varscan, mutect, strelka")
 mutect.datasets <- c("mutect, strelka")
-strelka.datasets <- c("varscan, mutect, strelka")
+#strelka.datasets <- c("varscan, mutect, strelka")
 
 calls.union.varscan.temp <- filter(calls.union, calls.union$datasets %in% varscan.datasets)
 calls.union.mutect.temp <- filter(calls.union, calls.union$datasets %in% mutect.datasets)
-calls.union.strelka.temp <- filter(calls.union, calls.union$datasets %in% strelka.datasets)
+#calls.union.strelka.temp <- filter(calls.union, calls.union$datasets %in% strelka.datasets)
 
 # now add annotation to individual datasets and combine again
 calls.all.varscan <- merge(calls.union.varscan.temp, varscan.calls.to.merge, by = "combine")
 calls.all.mutect <- merge(calls.union.mutect.temp, mutect.calls.to.merge, by = "combine")
-calls.all.strelka <- merge(calls.union.strelka.temp, strelka.calls.to.merge, by = "combine")
+#calls.all.strelka <- merge(calls.union.strelka.temp, strelka.calls.to.merge, by = "combine")
 
-calls.all <- rbind(calls.all.varscan, calls.all.mutect, calls.all.strelka)
+calls.all <- rbind(calls.all.varscan, calls.all.mutect)
+#calls.all <- rbind(calls.all.varscan, calls.all.mutect, calls.all.strelka)
 calls.all$combine <- NULL
 
 # merge meta data with variant calls
@@ -850,13 +852,8 @@ calls.all <- unique(arrange(calls.all, tumor.id, chr, pos))
 # filters to reduce duplicate variants (HGVS_protein and removal of sequence feature effects)
 calls.all <- unique(calls.all)
 
-# rename HGVS columns
-calls.all <- calls.all %>% dplyr::rename(hgvs_protein=hgvs_protein.y, hgvs_cdna=hgvs_cdna.y)
-calls.all$hgvs_cdna.x <- NULL
-calls.all$hgvs_protein.x <- NULL
-
 # write out the calls for downstream interpretation
-write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+#write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 
 # filter out UTR variants for "final" calls
 effects.exclude <- c("5_prime_UTR_variant", "3_prime_UTR_variant")
@@ -866,9 +863,167 @@ write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all
 
 ```
 
-## ##########################################
-## Get overlap between exome and target data
-## ##########################################
+## ####################################################
+## Integrate final set of target calls with exome calls
+## ####################################################
+
+Steps required to integrate the calls:
+
+1. Map target SnpEff mappings to exome mappings (will cause some variants with "conservative_inframe_deletion", "conservative_inframe_insertion", or "non_coding_transcript_variant")
+
+2. Extract common columns between target and exome mutation datasets
+
+3. Add column for type of dataset --> e.g. exome, target, target validation
+
+## Step 1: Map target SnpEff mappings to exome mappings
+
+```{r}
+# read in mappings
+snpeff.mappings <- read.table("/Volumes/shung/projects/gzl_targeted/data/effect.seq_ontology_to_effect.classic.txt", sep = "\t", header = TRUE)
+
+# remove excluded effects from target dataset
+mappings.remove <- filter(snpeff.mappings, snpeff.mappings$effect.classic == "remove")
+calls.target.to_integrate <- filter(calls.all, !(calls.all$effect %in% mappings.remove$effect.sequence_ontology))
+
+# map target SnpEff to exome SnpEff
+target.snpEff_to_exome.snpEff <- c("disruptive_inframe_deletion"="CODON_CHANGE_PLUS CODON_DELETION",
+                                   "disruptive_inframe_insertion"="CODON_CHANGE_PLUS CODON_INSERTION",
+                                   "frameshift_variant"="FRAME_SHIFT",
+                                   "missense_variant"="NON_SYNONYMOUS_CODING",
+                                   "protein_protein_contact"="PROTEIN_PROTEIN_INTERACTION_LOCUS",
+                                   "start_lost"="START_LOST",
+                                   "stop_gained"="STOP_GAINED",
+                                   "stop_lost"="STOP_LOST",
+                                   "3_prime_UTR_variant"="UTR_3_PRIME",
+                                   "5_prime_UTR_variant"="UTR_5_PRIME",
+                                   "frameshift_variant&splice_acceptor_variant&splice_region_variant&intron_variant"="FRAME_SHIFT",
+                                   "frameshift_variant&splice_donor_variant&splice_region_variant&intron_variant"="FRAME_SHIFT",
+                                   "frameshift_variant&splice_region_variant"="FRAME_SHIFT",
+                                   "frameshift_variant&start_lost"="START_LOST",
+                                   "frameshift_variant&stop_lost"="FRAME_SHIFT",
+                                   "missense_variant&splice_region_variant"="NON_SYNONYMOUS_CODING",
+                                   "splice_acceptor_variant&intron_variant"="SPLICE_SITE_ACCEPTOR",
+                                   "splice_acceptor_variant&splice_region_variant&5_prime_UTR_variant&intron_variant"="SPLICE_SITE_ACCEPTOR",
+                                   "splice_acceptor_variant&splice_region_variant&intron_variant"="SPLICE_SITE_ACCEPTOR",
+                                   "splice_donor_variant&conservative_inframe_deletion&splice_region_variant&intron_variant"="SPLICE_SITE_DONOR",
+                                   "splice_donor_variant&intron_variant"="SPLICE_SITE_DONOR",
+                                   "splice_donor_variant&splice_region_variant&intron_variant"="SPLICE_SITE_DONOR",
+                                   "stop_gained&splice_region_variant"="STOP_GAINED")
+calls.target.to_integrate$effect <- revalue(calls.target.to_integrate$effect, target.snpEff_to_exome.snpEff)
+
+# write to output file
+#write.table(calls.target.to_integrate, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all-target_with_mapped_snpEff.to_integrate.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+## Step 2: Extract common columns between target and exome mutation datasets
+
+```{r}
+# read in exome calls to be integrated - double check that these do not contain UTR mutations
+exome.calls <- read.table("/Volumes/shung/projects/gzl_exomes/snv_analysis-20181127/snv_indel_datasets/snvs_indels.full_cohort_minus_GZ229.default_and_optimized.FINAL_DATASET.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+# remove UTR mutations from exome calls
+effects.exclude <- c("UTR_3_PRIME", "UTR_5_PRIME")
+exome.calls <- filter(exome.calls, !(exome.calls$effect %in% effects.exclude))
+
+# remove columns that won't be used in the integration
+exome.calls$somatic_p_value <- NULL
+exome.calls$somatic_status <- NULL
+exome.calls$gt_normal <- NULL
+exome.calls$gt_tumor <- NULL
+exome.calls$thresholds <- NULL
+exome.calls$gmaf <- NULL
+exome.calls$fun_class <- NULL
+exome.calls$HGVS_DNA <- NULL
+
+# split the HGVS column into HGVS protein and HGVS cds
+# NB: need to account for cases that migth not have one or both
+# e.g. in many cases, there will only be the CDS annotation present - in cases like this, it will get assigned to the first column listed in the "into" parameter of separate
+exome.calls <-
+  separate(data = exome.calls,
+           col = HGVS_protein,
+           into = c("hgvs_protein", "hgvs_cdna"),
+           sep = "/",
+           remove = TRUE,
+           fill = "left")
+
+# mappings for 3-letter amino acids to 1-letter amino acid codes
+AA.replaces <- data.frame(from = c("Ala", "Arg", "Asn", "Asp", "Asx", "Cys", "Glu", "Gln", "Glx", "Gly", "His", 
+                                   "Ile", "Leu", "Lys", "Met", "Phe", "Pro", "Ser", "Thr", "Trp", "Tyr", "Val"), 
+                          to = c("A", "R", "N", "D", "B", "C", "E", "Q", "Z", "G", "H", 
+                                 "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"))
+
+exome.calls <- FindReplace(data = exome.calls, 
+                                    Var = "hgvs_protein",
+                                    replaceData = AA.replaces,
+                                    from = "from",
+                                    to = "to",
+                                    exact = FALSE)
+
+# rename exome columns to match target columns
+colnames(exome.calls) <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt",
+                           "hgvs_protein", "hgvs_cdna", "normal.allele_freq", "tumor.allele_freq", 
+                           "normal.depth4", "tumor.depth4", "normal.var_reads", "tumor.var_reads",
+                           "effect", "impact", "transcript_id", "external_id", "callers")
+
+# for exomes: calculate normal depth and tumor depth from depth4 columns (to match target calls)
+exome.calls <-	
+  separate(data = exome.calls,	
+           col = tumor.depth4,	
+           into = c("tumor.ref_reads.forward", "tumor.ref_reads.reverse",
+                  "tumor.var_reads.forward", "tumor.var_reads.reverse"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)	
+exome.calls <-	
+  separate(data = exome.calls,	
+           col = normal.depth4,	
+           into = c("normal.ref_reads.forward", "normal.ref_reads.reverse",
+                  "normal.var_reads.forward", "normal.var_reads.reverse"),	
+           sep = ",",	convert = TRUE,
+           remove = FALSE)	
+# calculate tumor depth
+exome.calls$tumor.depth <- exome.calls$tumor.ref_reads.forward + exome.calls$tumor.ref_reads.reverse +
+  exome.calls$tumor.var_reads.forward + exome.calls$tumor.var_reads.reverse
+# calculate normal depth
+exome.calls$normal.depth <- exome.calls$normal.ref_reads.forward + exome.calls$normal.ref_reads.reverse +
+  exome.calls$normal.var_reads.forward + exome.calls$normal.var_reads.reverse
+
+exome.col_names <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt",
+                           "hgvs_cdna", "hgvs_protein", "normal.allele_freq", "tumor.allele_freq", 
+                           "normal.depth", "tumor.depth", "normal.var_reads", "tumor.var_reads",
+                           "effect", "impact", "transcript_id", "external_id", "callers")
+exome.calls <- exome.calls[, exome.col_names]
+
+# remove columns that won't be included in the integration
+calls.target.to_integrate$tumor.tissue_type <- NULL
+calls.target.to_integrate$tumor_content <- NULL
+calls.target.to_integrate$tumor.mean_target_coverage <- NULL
+calls.target.to_integrate$normal.extraction_method <- NULL
+calls.target.to_integrate$biotype <- NULL
+
+# rename target calls
+names(calls.target.to_integrate)[names(calls.target.to_integrate) == 'datasets'] <- 'callers'
+names(calls.target.to_integrate)[names(calls.target.to_integrate) == 'feature_id'] <- 'transcript_id'
+
+# now keep the same order of columns
+calls.target.to_integrate <- calls.target.to_integrate[, colnames(exome.calls)]
+
+samples.validation <- read.table("/Volumes/shung/projects/gzl_targeted/roc_analysis/data/samples.all.txt", header = FALSE)
+
+# label target validation, target extension, and exome cohorts
+calls.target_validation <- filter(calls.target.to_integrate, calls.target.to_integrate$tumor.id %in% samples.validation$V1)
+calls.target_extension <- filter(calls.target.to_integrate, !(calls.target.to_integrate$tumor.id %in% samples.validation$V1))
+calls.target_validation$cohort <- "target validation"
+calls.target_extension$cohort <- "target extension"
+exome.calls$cohort <- "exome"
+
+# combine target and exome calls
+calls.all <- rbind(exome.calls, calls.target_validation, calls.target_extension)
+
+# write calls to output
+write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
+
 
 ```{r}
 # final variant calls
@@ -971,200 +1126,3 @@ all.union <- unique(arrange(all.union, case_id, chr, pos))
 write.table(all.union, "/Volumes/shung/projects/gzl_targeted/comparison_to_WES/calls-WES_vs_targeted.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 ```
 
-## Preliminary visual analysis
-
-```{r}
-library(ggplot2)
-```
-
-# plot numbers of mutations by gene (sorted by number of mutations)
-
-```{r}
-# remove genes that are not mutated
-calls.all$gene <- factor(calls.all$gene)
-
-# sort by decreasing number of mutations per gene
-calls.all <- within(calls.all, gene <- factor(gene, levels=names(sort(table(gene), decreasing=FALSE))))
-
-# plot
-g <- ggplot(calls.all, aes(gene))
-g <- g + geom_bar(position = position_stack(reverse = TRUE)) +
-  coord_flip() +
-  theme(legend.position = "bottom") +
-  theme(axis.text.y = element_text(face = "italic"))
-```
-
-# plot numbers of mutations by effect (sorted by number of mutations)
-
-```{r}
-# remove effects that no longer correspond to mutations
-calls.all$effect <- factor(calls.all$effect)
-
-# sort by decreasing number of mutations per effect
-calls.all <- within(calls.all, effect <- factor(effect, levels = names(sort(table(effect), decreasing = FALSE))))
-
-# plot
-g <- ggplot(calls.all, aes(effect)) + 
-  geom_bar(position = position_stack(reverse = TRUE)) +
-  coord_flip() +
-  theme(legend.position = "bottom") + 
-  xlab("") + ylab("Number of mutations")
-
-```
-
-# show recurrent genes (proportion of cases mutated per gene)
-
-```{r}
-NUM_CASES = length(unique(calls.all$tumor.id))
-
-# get absolute number of mutated cases
-calls.unique_by_case <- unique(calls.all[c("tumor.id", "gene")])
-gene.num_cases_mutated <- as.data.frame(table(calls.unique_by_case$gene))
-
-# calculate proportion based on number of cases
-gene.num_cases_mutated$proportion <- gene.num_cases_mutated$Freq / NUM_CASES * 100
-
-colnames(gene.num_cases_mutated) <- c("gene", "freq", "proportion")
-
-# reorder genes by increasing frequency
-gene.num_cases_mutated$gene <- factor(gene.num_cases_mutated$gene, 
-                                       levels = gene.num_cases_mutated$gene[order(gene.num_cases_mutated$proportion)])
-
-p <- ggplot(data=gene.num_cases_mutated, aes(x = gene, y = proportion)) +
-  geom_bar(stat="identity", position=position_dodge(), width = 0.8) +
-  ylab("Cases mutated (%)") + xlab("") +
-  theme_bw() +
-  coord_flip() +
-  theme(legend.position="bottom") +
-  theme(axis.text.y = element_text(face = "italic"))
-```
-
-## Analysis of panel genes - coverage etc.
-
-```{r}
-library(ggplot2)
-library(dplyr)
-library(reshape2)
-
-# read in coverage data
-coverage <- read.table("/Volumes/shung/projects/gzl_targeted/pilot/metrics/all.interval_hs_metrics.txt", sep = "\t", header = TRUE)
-failures <- c("GZ-205-Macro-FFPEbis")
-coverage <- filter(coverage, !(coverage$sampleID %in% failures))
-coverage$sampleID <- factor(coverage$sampleID)
-
-# get mean coverage for each probe
-coverage.mean_gene <- t(acast(coverage, sampleID ~ name, fun.aggregate = mean, value.var = "mean_coverage"))
-write.table(coverage.mean_gene, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/coverage-mean_per_gene.txt", sep = "\t", quote = FALSE)
-
-# get mean coverage for each gene
-# first create a "probe name"
-coverage$probe <- paste(coverage$chrom, coverage$start, coverage$end, sep = ".")
-coverage.mean_probe <- t(acast(coverage, sampleID ~ probe, fun.aggregate = mean, value.var = "mean_coverage"))
-write.table(coverage.mean_probe, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/coverage-mean_per_probe.txt", sep = "\t", quote = FALSE)
-
-# find low coverage probes
-coverage.mean_probe.df <- as.data.frame(coverage.mean_probe)
-coverage.mean_probe.df$sum <- rowSums(coverage.mean_probe.df[,colnames(coverage.mean_probe.df)])
-CUTOFF = 500*12
-coverage.mean_probe.low <- subset(coverage.mean_probe.df, coverage.mean_probe.df$sum < CUTOFF)
-write.table(coverage.mean_probe.low, "/Volumes/shung/projects/gzl_targeted/pilot/metrics/low_coverage_probes.500X_cutoff.txt", quote = FALSE)
-
-# gene-level coverage
-p0 <- ggplot(coverage, aes(name, mean_coverage)) + 
-  geom_boxplot() +
-  xlab ("") + ylab("Mean coverage") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
-p1 <- ggplot(coverage, aes(name, mean_coverage)) + 
-  geom_boxplot() +
-  xlab ("") + ylab("Mean coverage") +
-  ylim(0, 2000) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
-p2 <- ggplot(coverage, aes(name, mean_coverage)) + 
-  geom_boxplot() +
-  xlab ("") + ylab("Mean coverage") +
-  scale_y_continuous(trans = 'log2') +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5, face = "italic"))
-
-grid.arrange(p0, p1, p2, ncol = 1)
-
-# faceted by gene
-# split into subsets of genes
-genes.gp1 <- c("ABCA13", "ABCC6", "ABCD2", "ACTB", "ADAP1", "AKAP6", "AMOT", "ARHGAP29", "ARID1A", "ARID5B", "ASCC3", "ASXL2", "ATM", "ATP13A4", "B2M", "BARX2", "BCL2", "BCL7A", "BIRC6", "BRPF1", "BRWD3", "BTG1", "C2CD3", "CARD11", "CCND3", "CD274", "CD58", "CD70", "CD79B", "CD83", "CIITA", "CISH", "COL13A1", "COL24A1", "CREBBP", "CSF2RB", "CSMD3", "CTNND2", "CXCR5", "DDX3X", "DDX60", "DHX58", "DIAPH3", "DSC2", "DUSP2", "DYNC1H1", "EBF1", "EEF1A1", "EGR1", "EHMT2", "EMD", "EP300", "EPHA7", "ETS1")
-
-genes.gp2 <- c("ETV6", "EZH2", "FADD", "FAS", "FBXO38", "FLT4", "FOXO1", "FPGT", "GCNT4", "GCSAM", "GNA13", "GPR137C", "GRIA4", "GRIN3A", "HCFC1", "HDAC4", "HEXIM1", "HIST1H1B", "HIST1H1C", "HIST1H1D", "HIST1H1E", "HIST1H2BC", "HIST1H3B", "HIST1H3D", "HIST1H4C", "HIST1H4E", "HIST1H4H", "HIST1H4J", "HLA-B", "IFNL3", "IKBKB", "IKZF3", "IL13RA1", "IL1RAPL2", "IL4R", "INPP5D", "IRF2BP2", "IRF4", "IRF8", "ITPKB", "JAK1", "JUNB", "KCNQ3", "KLF2", "KMT2A", "KMT2C", "KMT2D", "LAMB1", "LMF2", "LMTK2", "LRRN3", "LTB", "LTBP3", "MAF")
-
-genes.gp3 <- c("MAGEC2", "MAP2K1", "MAPK6", "MCL1", "MEF2B", "MFHAS1", "MPDZ", "MS4A1", "MSH6", "MYC", "MYD88", "NBPF6", "NCOR1", "NCOR2", "NEK1", "NF1", "NFATC3", "NFKB2", "NFKBIA", "NFKBIB", "NFKBIE", "NFKBIZ", "NLRP4", "NONO", "NOTCH1", "NOTCH2", "NSD1", "NUP214", "P2RY8", "PCBP1", "PDCD1LG2", "PIK3C2G", "PIM1", "PIM2", "PLXND1", "POM121L12", "POU2AF1", "POU2F2", "POU4F3", "PRDM16", "PRDM9", "PRKDC", "PRUNE2", "PTBP1", "PTEN", "PTPN1", "PTPN6", "PTPRN2", "RC3H2", "RELB", "RELN", "RGS1", "RHOA", "RIBC2")
-
-genes.gp4 <- c("RNF217", "SEMA3E", "SETD1B", "SETD2", "SETD5", "SETDB1", "SGK1", "SGPP1", "SHCBP1", "SHISA6", "SIAH2", "SLC6A3", "SOCS1", "SPEN", "SPOP", "SPSB4", "SRSF1", "SRSF2", "STAT3", "STAT5B", "STAT6", "TAB1", "TAF1", "TBC1D4", "TBL1XR1", "TCF3", "TET2", "THRA", "TIGD3", "TMEM30A", "TMSB4X", "TNFAIP3", "TNFAIP8L3", "TNFRSF14", "TNIP1", "TOPBP1", "TP53", "TP53BP1", "TRAF1", "TRAF2", "TRAF3", "TRPS1", "UBE2A", "USP5", "VMP1", "WDFY3", "WEE1", "XBP1", "XCR1", "XPO1", "YY1", "ZEB2", "ZFP36L1", "ZNF217", "ZNF423")
-
-coverage.gp1 <- filter(coverage, coverage$name %in% genes.gp1)
-coverage.gp2 <- filter(coverage, coverage$name %in% genes.gp2)
-coverage.gp3 <- filter(coverage, coverage$name %in% genes.gp3)
-coverage.gp4 <- filter(coverage, coverage$name %in% genes.gp4)
-
-p.gp1 <- ggplot(coverage.gp1, aes(x = sampleID, y = mean_coverage)) + 
-  geom_boxplot(alpha = 0.7) +
-  xlab ("") + ylab("Mean coverage") +
-  scale_y_continuous(trans = 'log2') +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
-p.gp1 + facet_grid(name ~ .)
-
-p.gp2 <- ggplot(coverage.gp2, aes(x = sampleID, y = mean_coverage)) + 
-  geom_boxplot(alpha = 0.7) +
-  xlab ("") + ylab("Mean coverage") +
-  scale_y_continuous(trans = 'log2') +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
-p.gp2 + facet_grid(name ~ .)
-
-p.gp3 <- ggplot(coverage.gp3, aes(x = sampleID, y = mean_coverage)) + 
-  geom_boxplot(alpha = 0.7) +
-  xlab ("") + ylab("Mean coverage") +
-  scale_y_continuous(trans = 'log2') +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
-p.gp3 + facet_grid(name ~ .)
-
-p.gp4 <- ggplot(coverage.gp4, aes(x = sampleID, y = mean_coverage)) + 
-  geom_boxplot(alpha = 0.7) +
-  xlab ("") + ylab("Mean coverage") +
-  scale_y_continuous(trans = 'log2') +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=8, vjust=0.5))
-p.gp4 + facet_grid(name ~ .)
-
-# sample-level coverage
-p3 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
-  geom_boxplot() +
-  xlab ("") + ylab("Mean coverage") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
-p4 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
-  geom_boxplot() +
-  ylim(0, 2000) +
-  xlab ("") + ylab("Mean coverage") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
-p5 <- ggplot(coverage, aes(sampleID, mean_coverage)) + 
-  geom_boxplot() +
-  scale_y_continuous(trans = 'log2') +
-  xlab ("") + ylab("Mean coverage") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, size=12, vjust=0.5))
-
-grid.arrange(p3, p4, p5, ncol = 1)
-
-# distribution of coverage
-
-d1 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
-    geom_density() +
-    xlab("Mean coverage") + ylab("Density") +
-    xlim(0, 2000)
-d2 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
-    geom_density() +
-    xlab("Mean coverage") + ylab("Density") +
-    xlim(0, 500)
-d3 <- ggplot(coverage, aes(as.numeric(mean_coverage))) + 
-    geom_density() +
-    xlab("Mean coverage") + ylab("Density") +
-    xlim(0, 200)
-grid.arrange(d1, d2, d3, ncol=1)
-#geom_vline(xintercept = max_x_intercept, col="red", lty=2) +
-#ylim(0, max_y_intercept+0.25*max_y_intercept) +
-#theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
-
-```
