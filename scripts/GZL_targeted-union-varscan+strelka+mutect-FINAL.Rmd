@@ -886,8 +886,8 @@ mappings.remove <- filter(snpeff.mappings, snpeff.mappings$effect.classic == "re
 calls.target.to_integrate <- filter(calls.all, !(calls.all$effect %in% mappings.remove$effect.sequence_ontology))
 
 # map target SnpEff to exome SnpEff
-target.snpEff_to_exome.snpEff <- c("disruptive_inframe_deletion"="CODON_CHANGE_PLUS CODON_DELETION",
-                                   "disruptive_inframe_insertion"="CODON_CHANGE_PLUS CODON_INSERTION",
+target.snpEff_to_exome.snpEff <- c("disruptive_inframe_deletion"="CODON_CHANGE_PLUS_CODON_DELETION",
+                                   "disruptive_inframe_insertion"="CODON_CHANGE_PLUS_CODON_INSERTION",
                                    "frameshift_variant"="FRAME_SHIFT",
                                    "missense_variant"="NON_SYNONYMOUS_CODING",
                                    "protein_protein_contact"="PROTEIN_PROTEIN_INTERACTION_LOCUS",
@@ -912,14 +912,26 @@ target.snpEff_to_exome.snpEff <- c("disruptive_inframe_deletion"="CODON_CHANGE_P
 calls.target.to_integrate$effect <- revalue(calls.target.to_integrate$effect, target.snpEff_to_exome.snpEff)
 
 # write to output file
-#write.table(calls.target.to_integrate, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all-target_with_mapped_snpEff.to_integrate.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(calls.target.to_integrate, "/Volumes/shung/projects/gzl_targeted/calls.all/calls.all-target_with_mapped_snpEff.to_integrate.txt", sep = "\t", quote = FALSE, row.names = FALSE)
 ```
 
 ## Step 2: Extract common columns between target and exome mutation datasets
 
 ```{r}
+# if starting this step from scratch:
+calls.target.to_integrate <- read.table("/Volumes/shung/projects/gzl_targeted/calls.all/calls.all-target_with_mapped_snpEff.to_integrate.txt", sep = "\t", header = TRUE)
+
 # read in exome calls to be integrated - double check that these do not contain UTR mutations
 exome.calls <- read.table("/Volumes/shung/projects/gzl_exomes/snv_analysis-20181127/snv_indel_datasets/snvs_indels.full_cohort_minus_GZ229.default_and_optimized.FINAL_DATASET.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+# read in case id mappings 
+case_id.mappings <- read.table("/Volumes/shung/projects/gzl_exomes/data/tumor_id.to.case_id.mappings.txt", sep = "\t", header = TRUE)
+
+# merge calls with id mappings
+exome.calls <- merge(exome.calls, case_id.mappings, by = "tumor_id", all.x = TRUE)
+
+# tumor_id is deprecated; replace with case_id
+exome.calls$tumor_id <- NULL;
 
 # remove UTR mutations from exome calls
 effects.exclude <- c("UTR_3_PRIME", "UTR_5_PRIME")
@@ -960,10 +972,10 @@ exome.calls <- FindReplace(data = exome.calls,
                                     exact = FALSE)
 
 # rename exome columns to match target columns
-colnames(exome.calls) <- c("tumor.id", "normal.id", "type", "chr", "pos", "gene", "ref", "alt",
+colnames(exome.calls) <- c("normal.id", "type", "chr", "pos", "gene", "ref", "alt",
                            "hgvs_protein", "hgvs_cdna", "normal.allele_freq", "tumor.allele_freq", 
                            "normal.depth4", "tumor.depth4", "normal.var_reads", "tumor.var_reads",
-                           "effect", "impact", "transcript_id", "external_id", "callers")
+                           "effect", "impact", "transcript_id", "external_id", "callers", "tumor.id")
 
 # for exomes: calculate normal depth and tumor depth from depth4 columns (to match target calls)
 exome.calls <-	
@@ -1019,110 +1031,21 @@ exome.calls$cohort <- "exome"
 # combine target and exome calls
 calls.all <- rbind(exome.calls, calls.target_validation, calls.target_extension)
 
+# BCC20-FFT = BCC20
+tumor_id.to.mappable_tumor_id <- c("BCC20-FFT"="BCC20")
+calls.all$tumor.id <- revalue(calls.all$tumor.id, tumor_id.to.mappable_tumor_id)
+
+# make sure MLL* genes are mapped to KMT* equivalents
+mll_genes.to.kmt_genes <- c("MLL"="KMT2A", "MLL2"="KMT2C", "MLL3"="KMT2D")
+calls.all$gene <- revalue(calls.all$gene, mll_genes.to.kmt_genes)
+
 # write calls to output
 write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR.txt", sep = "\t", quote = FALSE, row.names = FALSE)
 
-```
-
-
-```{r}
-# final variant calls
-exome.calls <- read.table("/Volumes/shung/projects/gzl_exomes/snv_analysis-20181127/snv_indel_datasets/snvs_indels.30_final.default_and_optimized.txt", sep = "\t", header = TRUE, fill = TRUE)
-target.calls <- read.table("/Volumes/shung/projects/gzl_targeted/calls.all/calls.all.unique-union-varscan_mutect_strelka-minus_temp_excludes.txt", sep = "\t", header = TRUE, fill = TRUE)
-
-# case id mappings
-exome.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/exome.id_mappings.txt", sep = "\t", header = TRUE)
-target.id_mappings <- read.table("/Volumes/shung/projects/gzl_targeted/comparison_to_WES/target.id_mappings.txt", sep = "\t", header = TRUE)
-
-# gene panel
+# create version of calls that are only for panel genes
 genes.panel <- read.table("/Volumes/shung/projects/gzl_exomes/data/target_panel_Agilent_genes.txt", header=FALSE)
 genes.panel <- as.vector(genes.panel$V1)
+calls.all <- filter(calls.all, calls.all$gene %in% genes.panel)
+write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR-panel_genes.txt", sep = "\t", quote = FALSE, row.names = FALSE)
 
-# map tumor id to case id so that patients ids are comparable between datasets
-exome.calls <- merge(exome.calls, exome.id_mappings, by = "tumor_id")
-target.calls <- merge(target.calls, target.id_mappings, by = "tumor.id")
-
-# extract columns of interest
-exome.keeps <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt", "evidence", 
-                 "var_reads_tumor", "allele_freq_tumor", "external_id")
-target.keeps <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt", "datasets", 
-                  "tumor.var_reads", "tumor.allele_freq", "external_id")
-exome.calls <- exome.calls[, exome.keeps]
-target.calls <- target.calls[, target.keeps]
-
-# rename columns to be for generating overlap datatset
-colnames(exome.calls) <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt", "exome.evidence", 
-                           "exome.tumor.var_reads", "exome.tumor.allele_freq", "exome.external_id")
-colnames(target.calls) <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt", "target.evidence", 
-                            "target.tumor.var_reads", "target.tumor.allele_freq", "target.external_id")
-
-# filter datasets so they are comparable at the gene level and patient level
-exome.calls <- filter(exome.calls, exome.calls$gene %in% genes.panel)
-exome.calls <- filter(exome.calls, exome.calls$case_id %in% unique(target.calls$case_id))
-target.calls <- unique(filter(target.calls, target.calls$case_id %in% unique(exome.calls$case_id)))
-
-# create a "union" table
-union.keeps <- c("case_id", "type", "chr", "pos", "gene", "ref", "alt")
-exome.union <- exome.calls[, union.keeps]
-target.union <- target.calls[, union.keeps]
-all.union <- unique(rbind(exome.union, target.union))
-
-# create a "key" for comparison of mutations
-exome.calls$combine = as.character(paste(
-  exome.calls$case_id,
-  exome.calls$type,
-  exome.calls$chr,
-  exome.calls$pos,
-  exome.calls$ref,
-  exome.calls$alt,
-  sep = "."
-))
-
-target.calls$combine = as.character(paste(
-  target.calls$case_id,
-  target.calls$type,
-  target.calls$chr,
-  target.calls$pos,
-  target.calls$ref,
-  target.calls$alt,
-  sep = "."
-))
-
-all.union$combine = as.character(paste(
-  all.union$case_id,
-  all.union$type,
-  all.union$chr,
-  all.union$pos,
-  all.union$ref,
-  all.union$alt,
-  sep = "."
-))
-
-# retrieve specific overlaps
-calls.exome_and_target <- intersect(unique(exome.calls$combine), unique(target.calls$combine))
-
-# label by which datasets combine is present in
-all.union <- all.union %>% mutate(source = ifelse(combine %in% exome.calls$combine, "exome", "target"))
-# add more granular labelling
-all.union <- all.union %>%
-  mutate(source = ifelse(combine %in% calls.exome_and_target, "exome + target", source))
-all.union <- unique(all.union)
-
-# add extra columns that are specific to each dataset
-exome.to_merge <- c("combine", "exome.evidence", "exome.tumor.var_reads", "exome.tumor.allele_freq", "exome.external_id")
-exome.calls.to_merge <- exome.calls[, exome.to_merge]
-target.to_merge <- c("combine", "target.evidence", "target.tumor.var_reads", "target.tumor.allele_freq", "target.external_id")
-target.calls.to_merge <- target.calls[, target.to_merge]
-
-# now add annotation
-all.union <- merge(all.union, exome.calls.to_merge, by = "combine", all.x = TRUE)
-all.union <- merge(all.union, target.calls.to_merge, by = "combine", all.x = TRUE)
-all.union$combine <- NULL
-
-# sort the calls by case, chr, then position	
-all.union <- unique(arrange(all.union, case_id, chr, pos))
-
-# write out the calls for downstream interpretation
-write.table(all.union, "/Volumes/shung/projects/gzl_targeted/comparison_to_WES/calls-WES_vs_targeted.txt", sep = "\t", row.names = FALSE, quote = FALSE)
 ```
-
