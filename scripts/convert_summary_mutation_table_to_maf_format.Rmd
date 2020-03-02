@@ -1,0 +1,130 @@
+---
+title: "Conversion of mutation summary to MAF"
+author: "Stacy Hung"
+date: "October 22, 2018"
+output: html_document
+---
+
+A Mutation Annotation Format (MAF) file (.maf) is tab-delimited text file that lists mutations, and originates from The Cancer Genome Atlas (TCGA) project, and described in detail here: 
+https://docs.gdc.cancer.gov/Data/File_Formats/MAF_Format/
+
+1. Hugo_Symbol              HUGO gene symbol
+2. Tumor_Sample_Barcode     Sample identifier
+3. Variant_Classification   One of {Missense_Mutation, Frame_Shift_Del, Nonsense_Mutation, Splice_Site, Frame_Shift_Ins, Nonstop_Mutation}
+4. Chromosome               Chromosome of mutation
+5. Start_Position           Start position of the mutation
+6. Reference_Allele         Reference sequence 
+7. Tumor_Seq_Allele1        Same as reference allele if genotype is heterozygous, otherwise variant allele
+8. Tumor_Seq_Allele2        The sequence representing the variant allele
+9. End_Position             End position of the mutation          
+10. Variant_Type            One of {SNP, DEL, INS}
+11. Protein_Change          Amino acid change
+12. VAF                     Variant Allele Frequency
+
+---
+The mutation summary file contains the final list of (filtered) SNVS + indels from the PMBCL cohort (combined paired and unpaired results).  To utilize a variety of visualization tools (e.g. oncoplot), mutations need to be in MAF format.  This script takes the non-MAF version of the mutations and converts them to a MAF formatted file.
+---
+
+## Load mutation calls.
+
+```{r}
+library(dplyr)
+library(plyr)
+library(tidyr)
+library(data.table)
+library(DataCombine)
+library(stringr)
+
+# read in GZ calls for all cases (exome + target)
+calls.all <- read.table("/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR.txt", sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+
+# remove validation cases
+calls.all <- filter(calls.all, calls.all$cohort != "target validation")
+
+# add label for SNP or INS or DEL
+
+# Pseudocode:
+# if (type == snv), then Variant_Type = "SNP"
+# else (type == indel)
+#   if (length of ref string > 1), then Variant_Type = "DEL"
+#   else Variant_Type = "INS"
+calls.snvs <- filter(calls.all, calls.all$type == "snv")
+calls.snvs$Variant_Type <- "SNP"
+
+calls.indels <- filter(calls.all, calls.all$type == "indel")
+calls.indels <- calls.indels %>% mutate(calls.indels, Variant_Type = ifelse( (type == "indel") & (stringr::str_length(ref) > 1), "DEL", "INS" ))
+calls.all <- rbind(calls.snvs, calls.indels)
+
+# map SnpEffect values to equivalent MAF Variant_Classification categories
+# Note: we will arbitrarily map all "FRAME_SHIFT" mutations to a Frame_Shift_Del since there isn't an easy way to tell otherwise if the frameshift is an insertion or deletion
+snpeff_effect.to.MAF_VarClass <- c(
+                            "CODON_DELETION"="Frame_Shift_Del",
+                            "CODON_INSERTION"="Frame_Shift_Ins",
+                            "NON_SYNONYMOUS_CODING"="Missense_Mutation",
+                            "NON_SYNONYMOUS_START"="Missense_Mutation",
+                            "SPLICE_SITE_ACCEPTOR"="Splice_Site",
+                            "SPLICE_SITE_DONOR"="Splice_Site",
+                            "SPLICE_SITE_REGION"="Splice_Site",
+                            "START_GAINED"="Translation_Start_Site",
+                            "START_LOST"="Missense_Mutation",
+                            "STOP_GAINED"="Nonsense_Mutation",
+                            "STOP_LOST"="Nonstop_Mutation",
+                            "CODON_CHANGE_PLUS_CODON_INSERTION"="Frame_Shift_Ins",
+                            "CODON_CHANGE_PLUS_CODON_DELETION"="Frame_Shift_Del",
+                            "SYNONYMOUS_CODING"="Silent",
+                            "SYNONYMOUS_STOP"="Silent",
+                            "EXON"="Targeted_Region",
+                            "FRAME_SHIFT"="Frame_Shift_Del"
+                            )
+calls.all$effect <- revalue(calls.all$effect, snpeff_effect.to.MAF_VarClass)
+
+# keep only the columns that are relevant to MAF generation
+keeps <- c("gene", "tumor.id", "effect", "ref", "alt", "hgvs_protein",
+           "chr", "pos", "tumor.allele_freq", "Variant_Type")
+calls.all <- calls.all[keeps]
+
+# rename samples column to match MAF format
+setnames(calls.all, "gene", "Hugo_Symbol")
+setnames(calls.all, "tumor.id", "Tumor_Sample_Barcode")
+setnames(calls.all, "effect", "Variant_Classification")
+setnames(calls.all, "ref", "Reference_Allele")
+setnames(calls.all, "chr", "Chromosome")
+setnames(calls.all, "pos", "Start_Position")
+setnames(calls.all, "tumor.allele_freq", "VAF")
+setnames(calls.all, "hgvs_protein", "Protein_Change")
+
+# remove "chr" prefix to match MAF format
+calls.all$Chromosome <- gsub("^chr", "", calls.all$Chromosome)
+
+# reorder columns
+keeps <- c("Hugo_Symbol", "Tumor_Sample_Barcode", "Variant_Classification", "Chromosome", 
+           "Start_Position", "Reference_Allele", "alt", "Variant_Type", "Protein_Change", "VAF")
+calls.all <- calls.all[keeps]
+
+# fill in Tumor_Seq_Allele1 and Tumor_Seq_Allele2 columns using gt column
+# if gt = "0/1", fill in Tumor_Seq_Allele1 as reference allele, otherwise (gt = 1/1), fill with alterante allele
+calls.all <- calls.all %>% 
+  mutate(calls.all, Tumor_Seq_Allele1 = ifelse( as.numeric(calls.all$VAF) > 75, 
+                                                calls.all$alt, 
+                                                calls.all$Reference_Allele ))
+calls.all$Tumor_Seq_Allele2 <- calls.all$alt
+calls.all$alt <- NULL
+
+# Calculate end position
+calls.all$End_Position <- calls.all$Start_Position # default: SNP
+
+# For insertions: start coord = end coord + 1 --> end coord = start coord - 1
+calls.all$End_Position <- ifelse(calls.all$Variant_Type == "INS", 
+                                     calls.all$Start_Position - 1,
+                                     calls.all$End_Position)
+
+# For deletions: end coord = start coord + length (deletion) - 1
+#   length (deletion) ~ length (REF) - 1 --> end coord = start coord + length (REF) - 2
+calls.all$End_Position <- ifelse(calls.all$Variant_Type == "DEL", 
+                                     calls.all$Start_Position + nchar(as.character(calls.all$Reference_Allele)) - 2, 
+                                     calls.all$End_Position)
+
+# write to output for downstream analysis (e.g. oncoplot, lolliplot)
+write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR.maf", sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
