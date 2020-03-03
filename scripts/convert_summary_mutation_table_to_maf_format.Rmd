@@ -36,7 +36,7 @@ library(DataCombine)
 library(stringr)
 
 # read in GZ calls for all cases (exome + target)
-calls.all <- read.table("/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR.txt", sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+calls.all <- read.table("/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR-panel_genes.txt", sep = "\t", header = TRUE, stringsAsFactors = FALSE)
 
 # remove validation cases
 calls.all <- filter(calls.all, calls.all$cohort != "target validation")
@@ -125,6 +125,5 @@ calls.all$End_Position <- ifelse(calls.all$Variant_Type == "DEL",
                                      calls.all$End_Position)
 
 # write to output for downstream analysis (e.g. oncoplot, lolliplot)
-write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR.maf", sep = "\t", quote = FALSE, row.names = FALSE)
-
+write.table(calls.all, "/Volumes/shung/projects/gzl_targeted/target+exome/calls.all-exome+target-snvs_indels-no_UTR-panel_genes.maf", sep = "\t", quote = FALSE, row.names = FALSE)
 ```
