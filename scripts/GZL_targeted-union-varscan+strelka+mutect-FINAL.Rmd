@@ -1032,7 +1032,17 @@ exome.calls$cohort <- "exome"
 calls.all <- rbind(exome.calls, calls.target_validation, calls.target_extension)
 
 # BCC20-FFT = BCC20
-tumor_id.to.mappable_tumor_id <- c("BCC20-FFT"="BCC20")
+tumor_id.to.mappable_tumor_id <- c("BCC20-FFT"="BCC20",
+                                   "GZ-056-FFPE-FS"="GZ-056",
+                                   "GZ-125-FFPE-FS"="GZ-125",
+                                   "GZ-159-Macro-FFPE"="GZ-159",
+                                   "GZ-162-Macro-FFPE"="GZ-162",
+                                   "GZ-170-merged"="GZ-170",
+                                   "GZ-194-Macro-FFPE"="GZ-194",
+                                   "GZ-246-Macro-FFPE"="GZ-246",
+                                   "GZ-254-FFPE-FS"="GZ-254",
+                                   "GZ-255-FFPE-FS"="GZ-255",
+                                   "GZ-256-macro-FFPE"="GZ-256")
 calls.all$tumor.id <- revalue(calls.all$tumor.id, tumor_id.to.mappable_tumor_id)
 
 # make sure MLL* genes are mapped to KMT* equivalents
